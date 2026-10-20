@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.40.0
+
+### Minor Changes
+
+- Streaming turns now survive a relay rate limit: a 429 error frame that arrives before any tool call is held, the relay is cooled, and the same turn resumes once on a sibling relay. Pre-stream 429s still roll before any client bytes, and tool-call turns keep the authentic verdict to avoid duplicate execution.
+
+### Patch Changes
+
+- Reconcile the remaining free-model specs with the highest published twin values, keeping lane hard caps authoritative:
+
+  - Cat Jam now advertises its 1,048,576-token window: the endpoint refuses a 1.05M prompt with `context_length_exceeded` (max 1,048,576), and a 900,337-token needle probe recalled correctly.
+  - Nemotron 3 Ultra (both lanes) now declares the 1,000,000-token lane cap; larger prompts are refused.
+  - Nemotron 3.5 and Super now carry the highest published 235,929 output ceiling below the window.
+  - Thinking selectors now expose only the depths published by the free or paid twin's datasheet; unlisted rungs stay locked off. The 3.6/3.8 Qwens add `minimal`, the other OVH reasoning rows expose `medium`, Inkling Small adds `max`, and Exo follows its paid twin's `minimal..xhigh` union.
+  - OVH output ceilings follow the highest published twin value below the window: 235,929 for the 397B and 3.8 Qwens, 65,536 for the 9B, 3.6 and both gpt-oss models, and 32,768 for Mistral and Llama.
+  - Remove Space Bunny: the free endpoint answers `410 ModelDeprecated` and points at `minimax-m3.1-flash-free`.
+  - Declare only text and image inputs. The host catalog has no video or audio input type, so upstream video/audio/PDF support (MiMo, GLM 5.3 Flash, Nemotron Super VL, Nano Omni) is documented in the README instead of being advertised in the picker.
+- Rate-limit rotation is now silent: a relay that answers 429 is cooled and deprioritized without a per-relay warning toast or per-relay WARN line while the pool still has a candidate. A pool-wide 429 burst alert still warns when many relays rate-limit in one minute. The rate-limit message appears only when no relay or direct fallback served the turn, including the existing 403-salvage path.
+- Model specs refreshed against the latest upstream catalogs. Free and paid variants of the same model now share the highest published context window, output ceiling, and input modalities, so a picker entry no longer understates what the model accepts.
+
 ## 1.39.0
 
 ### Minor Changes

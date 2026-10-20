@@ -87,7 +87,7 @@ interface BenchRow {
  notes: string;
 }
 
-/* Quick pass: 12 cells x {direct, relay} x 1 attempt = 24 rows. */
+/* Quick pass: 11 cells x {direct, relay} x 1 attempt = 22 rows. */
 const CELLS: Cell[] = [
  { model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh", perPath: 1 },
  { model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high", perPath: 1 },
@@ -96,7 +96,6 @@ const CELLS: Cell[] = [
  { model: "mimo-v2.6-flash-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "nemotron-3-ultra-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 1 },
- { model: "space-bunny-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "longcat-2.5-preview-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "ling-3.1-flash-free", effortLabel: "high", effortSent: "high", perPath: 1 },
  { model: "glm-5.3-flash-free", effortLabel: "high", effortSent: "high", perPath: 1 },

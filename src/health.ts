@@ -47,6 +47,8 @@ interface HealthData {
 	lastBytesAt: number;
 	/** Mid-stream turns the upstream model itself failed (model fault, never a relay fault). */
 	midStreamModelFaults: number;
+	/** Mid-stream turns held on a retriable rate-limit frame (whether or not the rescue served). */
+	midStreamRateLimitFaults: number;
 	/** Mid-stream turns cut by the relay/transport (relay fault, rotated away from). */
 	midStreamRelayTruncations: number;
 }
@@ -104,6 +106,7 @@ export function getHealthData(portOverride?: number, activeRequests = 0): Health
 		sseDegraded: sse.degraded,
 		lastBytesAt: getLastForwardedByteAt(),
 		midStreamModelFaults: midStreamFaults.modelFaults,
+		midStreamRateLimitFaults: midStreamFaults.rateLimitFaults,
 		midStreamRelayTruncations: midStreamFaults.relayTruncations,
 	};
 }

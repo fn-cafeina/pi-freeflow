@@ -81,6 +81,63 @@ const DETERMINISTIC_FAILURE_MARKERS = [
 ];
 
 /**
+ * A 429-shaped mid-stream error frame is a per-egress rate limit, not a
+ * terminal verdict: another relay IP may serve the same turn immediately.
+ * Kept separate from isTransientModelFailureFrame (which owns model flakes),
+ * and still vetoed by hard request/auth/quota verdicts so a billable or
+ * malformed request is never replayed as relay trouble.
+ */
+const RATE_LIMIT_MARKERS = [
+ "rate_limit",
+ "rate limit",
+ "too many requests",
+ '"status":429',
+ '"code":429',
+ "shared free-tier ip quota",
+];
+const RATE_LIMIT_HARD_MARKERS = [
+ "invalid_request",
+ "invalid_response",
+ "invalid_reasoning",
+ "previous_response",
+ "freetiererror",
+ "insufficient_quota",
+ "billing",
+ "authentication",
+ "invalid_api_key",
+ "permission",
+ "moderation",
+];
+
+/**
+ * True when an SSE block carries an upstream-issued rate-limit error (HTTP
+ * 429 / rate_limit_exceeded / "too many requests"). Requires an error-shaped
+ * frame so ordinary model prose mentioning "rate limit" never triggers a
+ * replay; hard billing/auth/request verdicts always win.
+ */
+export function isRetriableRateLimitFrame(s: string): boolean {
+ const lower = s.toLowerCase();
+ // A successful terminal echoes the full response object, whose `error` is
+ // null; it can contain the model's prose ("HTTP 429 means rate limit") and
+ // must never be replayed. Only a real error object/event may be held.
+ if (lower.includes('"type":"response.completed"') || lower.includes('"status":"completed"')) {
+  return false;
+ }
+ if (
+  !lower.includes('"error":{') &&
+  !lower.includes('"error":"') &&
+  !lower.includes('"status":"failed"') &&
+  !lower.includes("response.failed") &&
+  !lower.includes('"type":"error"')
+ ) {
+  return false;
+ }
+ if (RATE_LIMIT_HARD_MARKERS.some((m) => lower.includes(m))) return false;
+ return RATE_LIMIT_MARKERS.some((m) => lower.includes(m));
+}
+
+
+/**
  * True when scanned SSE text carries an upstream-issued response.failed frame
  * for a TRANSIENT model fault (server_error class). Text-only turns holding
  * such a frame may offer one silent re-fire; anything else (clean terminals,
@@ -130,16 +187,18 @@ function endsOnFinishedSseLine(tail: string): boolean {
 // model-fault frames vs relay-fault truncations. Relay-health marks stay the
 // rotation mechanism; these counters attribute blame for status/logs.
 let midStreamModelFaults = 0;
+let midStreamRateLimitFaults = 0;
 let midStreamRelayTruncations = 0;
 
 /** Current mid-stream fault split. */
-export function getMidStreamFaultStats(): { modelFaults: number; relayTruncations: number } {
- return { modelFaults: midStreamModelFaults, relayTruncations: midStreamRelayTruncations };
+export function getMidStreamFaultStats(): { modelFaults: number; rateLimitFaults: number; relayTruncations: number } {
+ return { modelFaults: midStreamModelFaults, rateLimitFaults: midStreamRateLimitFaults, relayTruncations: midStreamRelayTruncations };
 }
 
 /** Test-only: reset the mid-stream fault split. */
 export function _resetMidStreamFaultStatsForTest(): void {
  midStreamModelFaults = 0;
+ midStreamRateLimitFaults = 0;
  midStreamRelayTruncations = 0;
 }
 
@@ -819,21 +878,24 @@ export function rewriteSseBlock(
  if (cloak.pathname.endsWith("/messages")) return rewriteMessagesBlock(block, state, cloak);
  return rewriteChatBlock(block, state, cloak);
 }
+export type MidStreamRefireReason = "truncation" | "model" | "rate_limit";
 /**
  * Options for pipeUpstreamStream.
  */
 export interface StreamPipeOptions {
  /**
-  * Mid-stream resume hook. Invoked at most once per turn, only when the
-  * upstream truncates (clean FIN without a terminal marker, premature
-  * socket close, or a genuine stream error) while the client is still
-  * attached. Return a replacement upstream readable to continue THIS turn
-  * on it — no synthetic terminal is injected and the client response stays
-  * open. Return null (or throw) to keep the existing terminate behavior:
-  * a synthetic response.incomplete/failed plus relay-health accounting.
+  * Mid-stream resume hook. Invoked at most once per turn when the upstream
+  * truncates (clean FIN without a terminal marker, premature socket close,
+  * or a genuine stream error), emits a transient model-failure frame, or
+  * emits a retriable rate-limit frame, while the client is still attached.
+  * Return a replacement upstream readable to continue THIS turn on it — no
+  * synthetic terminal is injected and the client response stays open.
+  * Return null (or throw) to keep the existing terminate behavior: a held
+  * failure frame is released, a synthetic response.incomplete/failed is
+  * injected when needed, and the response is ended exactly once.
   * Client aborts and clean terminal markers never reach this hook.
   */
- refire?: () => Promise<Readable | null>;
+ refire?: (reason?: MidStreamRefireReason) => Promise<Readable | null>;
  /**
   * Content-type the upstream sent for this response, passed through verbatim.
   * A value that is present and not an SSE type (text/event-stream) switches
@@ -955,31 +1017,46 @@ export function pipeUpstreamStream(
    s.includes("[DONE]")
   );
  };
- // Held transient model-failure frame (raw chunk or rewritten block text):
+ // Held transient failure frame (raw chunk or rewritten block text):
  // withheld from the client while one silent resume is attempted. Dropped on
  // success, forwarded verbatim (as the genuine upstream verdict) when the
  // resume is vetoed, unavailable, or fails. Null outside a hold.
  let heldFailureChunk: string | Buffer | null = null;
+ let heldFailureReason: "model" | "rate_limit" = "model";
  /**
-  * Hold an upstream-issued transient model-failure frame for one silent
-  * resume on a sibling relay. Returns true when held (caller must NOT
-  * forward the frame); false keeps the existing terminate behavior. Tool
-  * turns always veto: a regenerated turn would re-execute forwarded calls.
+  * Hold an upstream-issued transient failure frame for one silent resume on
+  * a sibling relay. Returns true when held (caller must NOT forward the
+  * frame); false keeps the existing terminate behavior. Tool turns always
+  * veto: a regenerated turn would re-execute forwarded calls.
   */
- const holdModelFailureForRefire = (chunk: string | Buffer): boolean => {
+ const holdFailureForRefire = (
+  chunk: string | Buffer,
+  reason: "model" | "rate_limit",
+ ): boolean => {
   if (refirePending || heldFailureChunk !== null || sawToolCall) return false;
   if (clientAborted || refireUsed || !opts?.refire || res.writableEnded || res.destroyed) return false;
   refireUsed = true;
   refirePending = true;
   heldFailureChunk = chunk;
-  midStreamModelFaults += 1;
-  log(
-   "warn",
-   "upstream model failed this turn mid-stream (model fault) — retrying once on the next relay",
-   { totalChunks, totalBytes },
-   rid,
-  );
-  void rescueHeldModelFailure();
+  heldFailureReason = reason;
+  if (reason === "rate_limit") {
+   midStreamRateLimitFaults += 1;
+   log(
+    "info",
+    "upstream rate-limited this turn mid-stream — retrying once on the next relay",
+    { totalChunks, totalBytes },
+    rid,
+   );
+  } else {
+   midStreamModelFaults += 1;
+   log(
+    "warn",
+    "upstream model failed this turn mid-stream (model fault) — retrying once on the next relay",
+    { totalChunks, totalBytes },
+    rid,
+   );
+  }
+  void rescueHeldFailure(heldFailureReason);
   return true;
  };
  /**
@@ -1008,16 +1085,16 @@ export function pipeUpstreamStream(
   } catch { }
  };
  /**
-  * Resume a held model-failure turn on the replacement stream from
+  * Resume a held transient-failure turn on the replacement stream from
   * opts.refire (rotation marking lives there, shared with the truncation
   * path). Success drops the held frame; the stale cut stream's later
   * events are neutered by the generation check in watch().
   */
- const rescueHeldModelFailure = async (): Promise<void> => {
+ const rescueHeldFailure = async (reason: "model" | "rate_limit"): Promise<void> => {
   const refire = opts?.refire;
   let next: Readable | null = null;
   try {
-   next = refire ? await refire() : null;
+   next = refire ? await refire(reason) : null;
   } catch {
    next = null;
   }
@@ -1027,6 +1104,17 @@ export function pipeUpstreamStream(
     next?.destroy();
    } catch { }
    releaseHeldFailure();
+   // The cut stream's FIN/close may already have been consumed while the
+   // rescue was in flight (both handlers return early on refirePending), so
+   // nothing else will terminate this response. A held terminal frame sets
+   // hasTerminalEvent in releaseHeldFailure; a non-terminal chat/error frame
+   // still gets the synthetic terminal before the socket closes.
+   if (!hasTerminalEvent) {
+    ensureTerminalEvent(false, "mid-stream rescue failed", false, true);
+   }
+   try {
+    if (!res.writableEnded) res.end();
+   } catch { }
    return;
   }
   heldFailureChunk = null;
@@ -1040,7 +1128,12 @@ export function pipeUpstreamStream(
   try {
    if (!cut.destroyed) cut.destroy();
   } catch { }
-  log("debug", "mid-stream model-fault refire: continuing turn on replacement stream", { totalChunks, totalBytes }, rid);
+  log(
+   "debug",
+   `mid-stream ${reason === "rate_limit" ? "rate-limit" : "model-fault"} refire: continuing turn on replacement stream`,
+   { totalChunks, totalBytes },
+   rid,
+  );
  };
  /**
   * Write one payload to the client with the shared backpressure/flush
@@ -1083,6 +1176,9 @@ export function pipeUpstreamStream(
   * delivery guarantees.
   */
  const forwardText = (text: string): void => {
+  // A hold/refire can start inside a multi-block chunk; the cut stream's
+  // remaining blocks must not interleave with the replacement turn.
+  if (refirePending) return;
   const buf = Buffer.from(text, "utf8");
   const scanBuf =
    terminalScanCarry.length > 0
@@ -1090,11 +1186,19 @@ export function pipeUpstreamStream(
     : buf;
   const scanned = scanBuf.toString("utf8");
   if (!sawToolCall && TOOL_CALL_MARKERS.some((m) => scanned.includes(m))) sawToolCall = true;
+  // A 429-shaped frame is a per-egress rate limit: hold it for one silent
+  // resume on a sibling relay before the client ever sees a rate-limit error.
+  // Classify the CURRENT complete block, not the terminal scan carry: the
+  // carry may splice a previous block's "error" key into this one.
+  // Tool turns, a spent resume budget, or a hard verdict keep it terminal.
+  if (!hasTerminalEvent && isRetriableRateLimitFrame(text) && holdFailureForRefire(text, "rate_limit")) {
+   return;
+  }
   if (!hasTerminalEvent && checkTerminalEvent(scanned)) {
    // Upstream-issued transient model failure on a text-only turn: hold the
    // frame for one silent resume instead of terminating (tool turns veto
-   // inside holdModelFailureForRefire and keep the terminal below).
-   if (isTransientModelFailureFrame(scanned) && holdModelFailureForRefire(text)) return;
+   // inside holdFailureForRefire and keep the terminal below).
+   if (isTransientModelFailureFrame(scanned) && holdFailureForRefire(text, "model")) return;
    hasTerminalEvent = true;
   }
   terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
@@ -1166,7 +1270,7 @@ export function pipeUpstreamStream(
   refirePending = true;
   let next: Readable | null = null;
   try {
-   next = await opts.refire();
+   next = await opts.refire("truncation");
   } catch {
    next = null;
   }
@@ -1394,6 +1498,9 @@ export function pipeUpstreamStream(
   const flushed = flushBufferedToolArgs(cloakState, cloak);
   if (flushed !== null) forwardText(flushed);
  }
+  // A tail-framed failure frame may have started a hold during the flush
+  // above; the rescue owns the turn now. Do not inject a terminal or end.
+  if (refirePending || heldFailureChunk !== null) return;
   if (hasTerminalEvent) recordOnce(false);
   const elapsed = ((Date.now() - startAt) / 1000).toFixed(1);
   if (!hasTerminalEvent && totalChunks > 0) {
@@ -1447,6 +1554,9 @@ export function pipeUpstreamStream(
    const flushed = flushBufferedToolArgs(cloakState, cloak);
    if (flushed !== null) forwardText(flushed);
   }
+   // A tail-framed failure frame may have started a hold during the flush
+   // above; the rescue owns the turn now.
+   if (refirePending || heldFailureChunk !== null) return;
    if (bodyGate !== "sse") {
     // Non-SSE passthrough: same relay-fault accounting as the SSE path's
     // mid-body close (a genuine upstream socket death, not a client

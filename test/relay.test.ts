@@ -18,7 +18,7 @@ import {
 import { LOG_FILE, RELAY_STATE_FILE } from "../src/config.ts";
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
-import { withIsolatedRelayFiles } from "./_sandbox-helpers.ts";
+import { withIsolatedRelayFiles, withIsolatedSandboxFiles } from "./_sandbox-helpers.ts";
 
 test("relayFetch direct uses keepAlive dispatcher (connection: keep-alive)", async () => {
 	const seen: string[] = [];
@@ -115,6 +115,151 @@ function stubResponse(status: number, cancelled: number[]): Response {
 		},
 	} as unknown as Response;
 }
+
+test("429 rotation is silent: no rate-limit toast while a sibling relay serves", async (t) => {
+	await withIsolatedSandboxFiles(async () => {
+		_resetRollNotifyForTest();
+		resetAllRelayHealth();
+		const messages: string[] = [];
+		setStatusUi({
+			notify: (message: string) => {
+				messages.push(message);
+			},
+			setStatus() {},
+		} as unknown as Parameters<typeof setStatusUi>[0]);
+
+		t.mock.method(globalThis, "fetch", async (input: unknown) => {
+			const target = String(input);
+			if (target.startsWith("https://limited.example.com")) {
+				return new Response(JSON.stringify({ error: "rate limited" }), {
+					status: 429,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			return new Response(JSON.stringify({ id: "after-429" }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		});
+
+		const limited = "https://limited.example.com";
+		const healthy = "https://healthy.example.com";
+		setActiveRelayState({
+			enabled: true,
+			url: limited,
+			relays: [{ url: limited }, { url: healthy }],
+			mode: "auto",
+		} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+
+		try {
+			const res = await relayFetch(
+				"https://opencode.ai/zen/v1/chat/completions",
+				{ method: "POST", body: "{}" },
+				"silent429",
+			);
+			assert.equal(res.status, 200, "the sibling relay must serve the turn");
+			assert.equal((await res.json() as { id?: string }).id, "after-429");
+			assert.deepEqual(messages, [], "an intermediate 429 must never toast");
+			const lines = fs.readFileSync(LOG_FILE, "utf8").split(/\r?\n/).filter((l) => l.includes("silent429"));
+			assert.ok(
+				lines.some((l) => l.includes("[INFO]") && l.includes("rate-limited")),
+				"the rotation should leave one quiet INFO trace",
+			);
+			assert.ok(
+				!lines.some((l) => l.includes("[WARN]")),
+				"an intermediate 429 must not produce a WARN line",
+			);
+		} finally {
+			setStatusUi(null);
+			resetAllRelayHealth();
+			setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		}
+	});
+});
+
+test("exhaustion summary is INFO for an all-429 pool; mixed failures keep the WARN", async (t) => {
+	await withIsolatedSandboxFiles(async () => {
+		_resetRollNotifyForTest();
+		resetAllRelayHealth();
+		const fetchMock = t.mock.method(globalThis, "fetch", async (input: unknown) => {
+			const target = String(input);
+			if (target.startsWith("https://limited.example.com")) {
+				return new Response(JSON.stringify({ error: "rate limited" }), {
+					status: 429,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			if (target.startsWith("https://broken.example.com")) {
+				return new Response(JSON.stringify({ error: "unavailable" }), {
+					status: 503,
+					headers: { "content-type": "application/json" },
+				});
+			}
+			// Direct fallback.
+			return new Response(JSON.stringify({ error: "rate limited" }), {
+				status: 429,
+				headers: { "content-type": "application/json" },
+			});
+		});
+		try {
+			const limited = "https://limited.example.com";
+			setActiveRelayState({
+				enabled: true,
+				url: limited,
+				relays: [{ url: limited }],
+				mode: "auto",
+			} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+			const all429 = await relayFetch(
+				"https://opencode.ai/zen/v1/chat/completions",
+				{ method: "POST", body: "{}" },
+				"exhausted429",
+			);
+			assert.equal(all429.status, 429);
+			const all429Lines = fs.readFileSync(LOG_FILE, "utf8").split(/\r?\n/).filter((l) => l.includes("exhausted429"));
+			assert.equal(
+				all429Lines.filter((l) => l.includes("all relays rate-limited")).length,
+				1,
+				"the all-429 pool logs exactly one summary",
+			);
+			assert.ok(
+				all429Lines.some((l) => l.includes("[INFO]") && l.includes("all relays rate-limited")),
+				"an all-429 pool is a quiet INFO recovery, not a WARN",
+			);
+			assert.ok(
+				!all429Lines.some((l) => l.includes("relays bypassed/exhausted")),
+				"an all-429 pool must not claim a generic exhaustion",
+			);
+
+			resetAllRelayHealth();
+			const broken = "https://broken.example.com";
+			setActiveRelayState({
+				enabled: true,
+				url: broken,
+				relays: [{ url: broken }],
+				mode: "auto",
+			} as unknown as Parameters<typeof setActiveRelayState>[0], false);
+			const mixed = await relayFetch(
+				"https://opencode.ai/zen/v1/chat/completions",
+				{ method: "POST", body: "{}" },
+				"mixed503",
+			);
+			assert.equal(mixed.status, 429);
+			const mixedLines = fs.readFileSync(LOG_FILE, "utf8").split(/\r?\n/).filter((l) => l.includes("mixed503"));
+			assert.ok(
+				mixedLines.some((l) => l.includes("[WARN]") && l.includes("relays bypassed/exhausted")),
+				"a mixed 503 + 429 pool keeps the generic WARN summary",
+			);
+			assert.ok(
+				!mixedLines.some((l) => l.includes("all relays rate-limited")),
+				"a mixed pool must never be labelled all-rate-limited",
+			);
+		} finally {
+			fetchMock.mock.restore();
+			resetAllRelayHealth();
+			setActiveRelayState({ enabled: true, url: "", relays: [], mode: "auto" } as unknown as Parameters<typeof setActiveRelayState>[0], false);
+		}
+	});
+});
 
 test("roll-notify throttle: one toast per 5min window, reset hook re-arms it", async (t) => {
 	_resetRollNotifyForTest();

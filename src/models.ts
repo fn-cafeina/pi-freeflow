@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 35 verified free models (live-verified 2026-10-18):
- * - 12 OpenCode Zen models (all Chat Completions — the last Responses model,
+ * Defines the 34 verified free models (live-verified 2026-10-20):
+ * - 11 OpenCode Zen models (all Chat Completions — the last Responses model,
  *   muse-spark-1.2-contributor-free, was deprecated upstream 2026-10-18)
  * - 13 KiloCode Keyless Gateway models (OpenRouter format)
  * - 2 Cline direct-only models (per-user pool; one is Responses API)
@@ -20,13 +20,11 @@ export const OPENCODE_MODELS: ModelDef[] = [
   id: "cat-jam-free",
   name: "Cat Jam [OpenCode]",
   reasoning: true,
-  // Context is 262_144 even though the published twin now says 1,048,576
-  // (reconciled 2026-10-20): the gateway answers 200 to oversized prompts and
-  // silently truncates, so acceptance is not capability. A needle planted
-  // at the end of a 248,232-token prompt is recalled; at 250,272 it is not.
-  // The published 1M is what the model is declared to support; 262_144 is what
-  // this lane actually serves with full recall — keep the measured value.
-  contextWindow: 262_144,
+  // Confirmed 2026-10-20: the endpoint refuses a 1.05M-token prompt with
+  // "maximum context length is 1048576 tokens", and a 900,337-token needle
+  // probe recalled correctly. The earlier ~250K miss was recall, not
+  // truncation.
+  contextWindow: 1_048_576,
   maxTokens: 131_072,
   input: ["text"],
   // Effort ladder live-probed 2026-10-16: the gateway enumerates
@@ -48,9 +46,14 @@ export const OPENCODE_MODELS: ModelDef[] = [
   id: "mimo-v2.6-flash-free",
   name: "MiMo V2.6 Flash [OpenCode]",
   reasoning: true,
+  // Built-in catalog spec: 1,048,576 context / 131,072 output (the origin
+  // model and every paid twin agree). The free lane enforces a lower runtime
+  // cap in practice (measured ~348K; 349K is refused), but the catalog follows
+  // the model's built-in highest spec, so the authentic upstream error is what
+  // a caller sees above the lane's cap.
   contextWindow: 1_048_576,
   maxTokens: 131_072,
- input: ["text", "image", "video"],
+ input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
    minimal: "low",
@@ -65,10 +68,10 @@ export const OPENCODE_MODELS: ModelDef[] = [
   id: "nemotron-3-ultra-free",
   name: "Nemotron 3 Ultra [OpenCode]",
   reasoning: true,
-  // Raised 2026-10-20 (spec reconciliation): 1,048,576 ctx / 182,520 output
-  // per the NVIDIA family origin and the paid OpenRouter twin; the Zen free
-  // entry advertises the round 1M / 128K.
-  contextWindow: 1_048_576,
+  // The lane itself caps at 1,000,000 (a 1.29M-token request is refused with
+  // "maximum context length is 1000000 tokens"); the 1,048,576 figure belongs
+  // to a different provider row and is not served here.
+  contextWindow: 1_000_000,
   maxTokens: 182_520,
   input: ["text"],
   thinkingLevelMap: {
@@ -86,7 +89,9 @@ export const OPENCODE_MODELS: ModelDef[] = [
   name: "Nemotron 3.5 Lightning [OpenCode]",
   reasoning: true,
   contextWindow: 1_000_000,
-  maxTokens: 262_144,
+  // Highest published output below the window (OpenRouter/Kilo paid twins);
+  // the 262,144 figures repeat the context as the output cap.
+  maxTokens: 235_929,
   input: ["text"],
   thinkingLevelMap: {
    off: null,
@@ -111,10 +116,9 @@ export const OPENCODE_MODELS: ModelDef[] = [
   // published across the free and paid twins; the gateway also accepted
   // 131,072 through 524,288 on probe, and acceptance is not a cap, so the
   // published figure stays the budget.
-  // Input carries video as well as text/image: the published twin advertises
-  // it and video is representable on this lane, so the reconciliation takes
-  // the union. The live probe only confirmed image (a 1x1 PNG reads back as
-  // "red").
+  // The upstream twin advertises video, but the host's ModelInputType has no
+  // video member, so only text and image are declared. Video remains
+  // documented in the README; it is not selectable in the picker.
   // Effort ladder probed level-by-level 2026-10-16: minimal/low/medium/high/
   // xhigh all answer 200 with reasoning (an unsupported value answers 400, so
   // the gateway validates per model); `max` also 200s but stays hidden
@@ -128,7 +132,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 235_929,
-  input: ["text", "image", "video"],
+  input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -157,23 +161,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
   },
  },
  {
-  id: "space-bunny-free",
-  name: "Space Bunny Free [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 524_288,
- input: ["text", "image", "video"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: null,
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: "max",
-  },
- },
- {
   id: "longcat-2.5-preview-free",
   name: "LongCat 2.5 Preview [OpenCode]",
   reasoning: true,
@@ -189,7 +176,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
    medium: "medium",
    high: "high",
    xhigh: "xhigh",
-   max: "max",
+   max: null,
   },
  },
  {
@@ -205,28 +192,28 @@ export const OPENCODE_MODELS: ModelDef[] = [
   // twins — models.dev's free entry claims only 32,000, while the gateway
   // accepted up to 131,072; acceptance is not a cap, so the twin figure stays
   // the budget.
-  // Effort ladder probed level-by-level 2026-10-16: minimal/low/medium/high/
-  // xhigh/max all answer 200 (an unsupported value answers 400
-  // [invalid_value], so the gateway validates per model), and minimal vs max
-  // visibly changes reasoning length. Chat is the only native shape
-  // (/v1/responses answers 400 "Model does not support this protocol"),
-  // so `api` stays unset. Vision verified live (a 1x1 PNG reads back as a
-  // colour). Video is carried from the published twin spec — 2026-10-20
-  // reconciliation takes the union of host-representable modalities — while
-  // pdf is not representable on this lane and is not offered.
+  // Effort ladder: the free and paid datasheets both publish low/high/max
+  // (models.dev opencode + OMP's committed row); the other rungs stay null.
+  // Chat is the only native shape (/v1/responses answers 400
+  // "Model does not support this protocol"), so `api` stays unset. Vision is
+  // published. Video and PDF are documented upstream capabilities, but the
+  // host carries no input type for them, so neither is declared.
   id: "glm-5.3-flash-free",
   name: "GLM-5.3 Flash [OpenCode]",
   reasoning: true,
+  // Built-in catalog spec: 1,048,576 context. The free lane's runtime cap is
+  // lower (296,517 accepted, 298,556 refused), but the catalog follows the
+  // model's built-in highest spec and surfaces the upstream error.
   contextWindow: 1_048_576,
   maxTokens: 131_072,
-  input: ["text", "image", "video"],
+  input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
-   minimal: "minimal",
+   minimal: null,
    low: "low",
-   medium: "medium",
+   medium: null,
    high: "high",
-   xhigh: "xhigh",
+   xhigh: null,
    max: "max",
   },
  },
@@ -278,13 +265,16 @@ export const OPENCODE_MODELS: ModelDef[] = [
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   input: ["text", "image"],
+  // The free datasheet lists only `high`, but the paid twin publishes
+  // minimal..xhigh, so the shared-model union exposes those rungs; `max` is
+  // not published by either and stays null.
   thinkingLevelMap: {
    off: null,
-   minimal: null,
-   low: null,
-   medium: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
    high: "high",
-   xhigh: null,
+   xhigh: "xhigh",
    max: null,
   },
  },
@@ -314,15 +304,15 @@ export const OPENCODE_MODELS: ModelDef[] = [
   input: ["text", "image"],
   // Vision verified live (a 1x1 PNG reads back as "Pink"). Video is not
   // advertised for this model upstream, so it is not offered here.
-  // Every effort level is accepted and visibly changes reasoning length, so
-  // the whole ladder stays selectable; `off` is always null.
+  // Effort ladder: both datasheets publish exactly low/high/max; the other
+  // rungs stay null instead of exposing an unlisted value.
   thinkingLevelMap: {
    off: null,
-   minimal: "minimal",
+   minimal: null,
    low: "low",
-   medium: "medium",
+   medium: null,
    high: "high",
-   xhigh: "xhigh",
+   xhigh: null,
    max: "max",
   },
 },
@@ -347,6 +337,16 @@ const KILO_REASONING_MAP: ThinkingLevelMap = {
 };
 
 /**
+ * Kilo's published ladder tops out at `max` for Inkling Small (its free entry
+ * lists none/minimal/low/medium/high/max), unlike the other Kilo models whose
+ * datasheets stop at xhigh. Same shape, one extra rung.
+ */
+const KILO_REASONING_MAX_MAP: ThinkingLevelMap = {
+ ...KILO_REASONING_MAP,
+ max: "max",
+};
+
+/**
  * KiloCode Gateway free models (keyless — https://kilo.ai/docs/gateway).
  */
 export const KILO_MODELS: ModelDef[] = [
@@ -354,12 +354,11 @@ export const KILO_MODELS: ModelDef[] = [
   id: "dots-studio/dots-3-note-preview:free",
   name: "Dots3-Note Preview (384K) [Kilo]",
   reasoning: true,
-  // Kilo advertises 512,000 ctx / 460,800 out, but the only provider behind
-  // this free id (atlas-cloud) serves a 393,216-token total window: with a
-  // 20-token prompt, max_tokens 393,195 answers 200 and 393,196 answers 400,
-  // and a 6,014-token prompt moves the boundary by exactly its prompt_tokens
-  // (probed 2026-10-20). Declared window is the served one; the output budget
-  // keeps 131,072 tokens of prompt headroom under it.
+  // Kilo publishes 512,000 ctx / 460,800 out, but the only provider behind
+  // this free id (atlas-cloud) serves a 393,216-token total window. Re-probed
+  // 2026-10-20: with a 20-token prompt, max_tokens 393,195 answers 200 and
+  // 460,800 answers 400 "bad request". Declared values are the served window
+  // and an output budget that keeps prompt headroom under it.
   contextWindow: 393_216,
   maxTokens: 262_144,
   input: ["text", "image"],
@@ -375,7 +374,7 @@ export const KILO_MODELS: ModelDef[] = [
   // context with an output figure the spec does not carry.
   contextWindow: 262_144,
   maxTokens: 65_536,
- input: ["text", "image", "video"],
+ input: ["text", "image"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
@@ -383,9 +382,9 @@ export const KILO_MODELS: ModelDef[] = [
   id: "nvidia/nemotron-3-ultra-550b-a55b:free",
   name: "Nemotron 3 Ultra 550B [Kilo]",
   reasoning: true,
-  // Raised 2026-10-20: 1,048,576 ctx / 182,520 output per the NVIDIA family
-  // origin (this entry previously carried the round 1M / 128K).
-  contextWindow: 1_048_576,
+  // The gateway caps this id at 1,000,000 (a 1.11M-token request is refused
+  // with "maximum context length is 1000000 tokens").
+  contextWindow: 1_000_000,
   maxTokens: 182_520,
   input: ["text"],
   thinkingFormat: "openrouter",
@@ -396,7 +395,9 @@ export const KILO_MODELS: ModelDef[] = [
   name: "Nemotron 3.5 Lightning [Kilo]",
   reasoning: true,
   contextWindow: 1_000_000,
-  maxTokens: 262_144,
+  // Highest published output below the window (OpenRouter/Kilo paid twins);
+  // the 262,144 figures repeat the context as the output cap.
+  maxTokens: 235_929,
   input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -405,8 +406,10 @@ export const KILO_MODELS: ModelDef[] = [
   id: "nvidia/nemotron-3-super-120b-a12b:free",
   name: "Nemotron 3 Super 120B [Kilo]",
   reasoning: true,
+  // 262,144 ctx per every direct provider; 235,929 output is the highest
+  // published value below the window (the 262,144 figure repeats the context).
   contextWindow: 262_144,
-  maxTokens: 262_144,
+  maxTokens: 235_929,
   input: ["text"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
@@ -425,8 +428,9 @@ export const KILO_MODELS: ModelDef[] = [
   id: "poolside/laguna-s-2.1:free",
   name: "Laguna S 2.1 [Kilo]",
   reasoning: true,
-  // Raised 2026-10-20: 1,048,576 ctx / 131,072 output per the published twins
-  // (the free entry previously advertised 262,144 / 32,768).
+  // Built-in catalog spec: 1,048,576 context. The free gateway's runtime cap
+  // is 262,144; the catalog follows the model's built-in highest spec and
+  // surfaces the upstream error above that cap.
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   input: ["text"],
@@ -483,7 +487,7 @@ export const KILO_MODELS: ModelDef[] = [
   maxTokens: 262_144,
   input: ["text", "image"],
   thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
+  thinkingLevelMap: KILO_REASONING_MAX_MAP,
  },
  {
   // Added 2026-10-09: live on Kilo free list (isFree:true, 0/0 pricing,
@@ -530,7 +534,7 @@ export const CLINE_MODELS: ModelDef[] = [
   contextWindow: 1_048_576,
   maxTokens: 131_072,
   api: "openai-responses",
- input: ["text", "image", "video"],
+ input: ["text", "image"],
   thinkingLevelMap: {
    off: null,
    minimal: "minimal",
@@ -547,7 +551,7 @@ export const CLINE_MODELS: ModelDef[] = [
   reasoning: true,
  contextWindow: 1_048_576,
   maxTokens: 131_072,
- input: ["text", "image", "video"],
+ input: ["text", "image"],
   thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
  },
 ];
@@ -564,7 +568,22 @@ const OVH_REASONING_MAP: ThinkingLevelMap = {
  off: null,
  minimal: null,
  low: "low",
- medium: null,
+ medium: "medium",
+ high: "high",
+ xhigh: null,
+ max: null,
+};
+
+/**
+ * Qwen3.6/Qwen3.8 on OVH publish one extra rung: models.dev's ovhcloud row
+ * lists none/minimal/low/medium/high, unlike the 3.5 pairs and gpt-oss which
+ * start at low. No xhigh/max on either.
+ */
+const OVH_QWEN_REASONING_MAP: ThinkingLevelMap = {
+ off: null,
+ minimal: "minimal",
+ low: "low",
+ medium: "medium",
  high: "high",
  xhigh: null,
  max: null,
@@ -589,15 +608,15 @@ export const OVH_MODEL_PREFIX = "ovh-free/";
  * natively too (with store:false injected). Anthropic messages is not served
  * (`/v1/messages` answers 404 unknown_url upstream).
  *
- * Specs (measured live 2026-10-13, reconciled against every twin provider
- * carrying a spec on 2026-10-20): contextWindow is OVH's advertised value —
- * the lane hard-caps there, so a twin advertising a larger window on another
- * provider is not served here and must not be copied in. maxTokens is the
- * highest published ceiling OVH actually accepts with a small prompt: the
- * `/v1/models` max_completion_tokens field repeats the context window, and a
- * request whose prompt + max reaches that window is refused (probed
- * 2026-10-20), so the echoed figure is not a usable budget. The Qwen family
- * accepts 131,072; the two 32K-output models use their published 32,768.
+ * Specs (datasheets only, reconciled 2026-10-20): contextWindow is OVH's own
+ * advertised value — the lane hard-caps there, so a twin advertising a larger
+ * window on another provider is not served here and must not be copied in.
+ * maxTokens is the highest output published by a twin below the window (the
+ * `/v1/models` max_completion_tokens field repeats the context, so that echo
+ * is discarded): 235,929 for the 397B and 3.8, 65,536 for the 9B, 3.6 and
+ * both gpt-oss models. Effort rungs come from models.dev's ovhcloud rows,
+ * not from wire probes: gpt-oss and the 3.5 Qwens list low/medium/high, the
+ * 3.6/3.8 add minimal.
  *
  * Vision was probed with a generated solid-colour PNG sent as a data URL,
  * twice with two different colours to defeat a memorised answer: the four
@@ -613,7 +632,7 @@ export const OVH_MODELS: ModelDef[] = [
   name: "GPT-OSS 120B [OVH]",
   reasoning: true,
   contextWindow: 131_072,
-  maxTokens: 131_072,
+  maxTokens: 65_536,
   input: ["text"],
   thinkingLevelMap: OVH_REASONING_MAP,
  },
@@ -622,7 +641,7 @@ export const OVH_MODELS: ModelDef[] = [
   name: "GPT-OSS 20B [OVH]",
   reasoning: true,
   contextWindow: 131_072,
-  maxTokens: 131_072,
+  maxTokens: 65_536,
   input: ["text"],
   thinkingLevelMap: OVH_REASONING_MAP,
  },
@@ -631,7 +650,7 @@ export const OVH_MODELS: ModelDef[] = [
   name: "Qwen3.5 397B A17B [OVH]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 131_072,
+  maxTokens: 235_929,
   input: ["text", "image"],
   thinkingLevelMap: OVH_REASONING_MAP,
  },
@@ -640,7 +659,7 @@ export const OVH_MODELS: ModelDef[] = [
   name: "Qwen3.5 9B [OVH]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 131_072,
+  maxTokens: 65_536,
   input: ["text", "image"],
   thinkingLevelMap: OVH_REASONING_MAP,
  },
@@ -649,18 +668,18 @@ export const OVH_MODELS: ModelDef[] = [
   name: "Qwen3.6 27B [OVH]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 131_072,
+  maxTokens: 65_536,
   input: ["text", "image"],
-  thinkingLevelMap: OVH_REASONING_MAP,
+  thinkingLevelMap: OVH_QWEN_REASONING_MAP,
  },
  {
   id: "ovh-free/Qwen3.8-27B",
   name: "Qwen3.8 27B [OVH]",
   reasoning: true,
   contextWindow: 262_144,
-  maxTokens: 131_072,
+  maxTokens: 235_929,
   input: ["text", "image"],
-  thinkingLevelMap: OVH_REASONING_MAP,
+  thinkingLevelMap: OVH_QWEN_REASONING_MAP,
  },
  {
   id: "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
@@ -716,7 +735,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
- "space-bunny": "space-bunny-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",
  "longcat": "longcat-2.5-preview-free",
  "beam": "beam-free",
@@ -774,7 +792,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 35 static free models (canonical)
+ * Combined list of all 34 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

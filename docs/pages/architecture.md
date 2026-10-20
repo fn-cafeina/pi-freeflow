@@ -39,7 +39,7 @@ src/
 ├── index.ts                 # Extension bootstrap, provider registration, lifecycle hooks
 ├── lease.ts                 # Client lease registry and heartbeat expiry for daemon retirement
 ├── logger.ts                # Structured, leveled, rotating file logger (10MB x 10)
-├── models.ts                # 35 curated free model definitions and upstream mappings
+├── models.ts                # 34 curated free model definitions and upstream mappings
 ├── opencode-fingerprint.ts  # Zen free-tier fingerprint enforcement + SSE stream aggregation
 ├── probe.ts                 # Relay reachability probe (HTTP 200 + latency)
 ├── proxy.ts                 # Loopback HTTP proxy server on 28180 with master/worker reuse
@@ -137,13 +137,27 @@ To prevent network burst storms when multiple subagents boot simultaneously, the
 - **Location**: `~/.pi/agent/pi-freeflow-catalog-cache.json`
 - **TTL**: 24 hours (86,400,000 ms)
 - **Atomic Write**: Uses a temp file + `fs.renameSync` to prevent corruption under concurrent writes
-- **Boot Speed**: Subagents load all 35 models from disk cache in ~0.1ms
+- **Boot Speed**: Subagents load all 34 models from disk cache in ~0.1ms
 
 ## Stream Lifecycle Safety
 
-- **Zero-buffering SSE**: `res.flushHeaders()` and `res.write()` ensure tokens stream immediately
+- **Zero-buffering SSE**: `res.flushHeaders()` and `res.write()` ensure tokens stream immediately; only complete SSE blocks are forwarded, so a network chunk boundary never splits JSON
 - **Disconnect cleanup**: `req.on("close")`, `req.on("error")` immediately destroy upstream streams
 - **Proxy timeout**: 300 seconds (5 minutes) for heavy prompt evaluations
+
+### Relay failover across the stream lifecycle
+
+The commit point is the first upstream **body byte**, not the response headers. Before it, relay rotation is invisible; after it, the turn is continued rather than restarted where that is safe.
+
+| Phase | Client sees | What the proxy does |
+| :--- | :--- | :--- |
+| Before upstream headers | nothing | `relayFetch` rolls 429/5xx candidates; the proxy writes `200` only after a relay accepts, so the SSE client never sees an intermediate 429 |
+| SSE open, no tool call | may include partial text | A 429 error frame is held, the relay is marked cooling (HTTP 429), and the request is re-fired once on a sibling; the held frame is dropped on success |
+| Stream cut / socket death, no tool call | partial deltas | One silent re-fire (text-only turns); the replacement continues the same client response |
+| Tool call already forwarded | partial deltas | No re-fire: replaying would re-execute the call. The authentic verdict (or a synthetic terminal) ends the turn |
+| All candidates exhausted | one response | The genuine rate-limit/error verdict is surfaced once and the response is terminated; there is no silent retry loop |
+
+SSE has no replay or byte-range semantics. A re-fire therefore starts a fresh generation on the sibling relay; for text-only turns the client keeps its partial output and the turn continues, while tool-call turns stay terminal by design. Hard quota, billing, auth, and malformed-request verdicts never trigger a re-fire.
 
 ## Tool-Call Argument Repair
 

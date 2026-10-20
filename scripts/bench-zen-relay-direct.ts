@@ -44,7 +44,7 @@
  * Usage:
  *   node --experimental-strip-types scripts/bench-zen-relay-direct.ts [--smoke] [--quick] [--reps <n>] [--only <id-substring>] [--out <path>]
  *   --smoke runs 1 direct + 1 relay attempt on nemotron-3.5-lightning-free/high.
- *   --quick runs the full 12-cell matrix at 1 attempt/path (24 rows, TTFB+outcome signal, no ranking).
+ *   --quick runs the full 11-cell matrix at 1 attempt/path (22 rows, TTFB+outcome signal, no ranking).
  */
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -91,7 +91,7 @@ interface BenchRow {
  notes: string;
 }
 
-/* 12 cells: spark + big-pickle at 3 attempts/path, other 8 live Zen at 2/path. */
+/* 11 cells: spark + big-pickle at 3 attempts/path, other 7 live Zen at 2/path. */
 const CELLS: Cell[] = [
  { model: "nemotron-3.5-super-vl-free", effortLabel: "xhigh", effortSent: "xhigh", perPath: 3 },
  { model: "nemotron-3.5-super-vl-free", effortLabel: "high", effortSent: "high", perPath: 3 },
@@ -100,7 +100,6 @@ const CELLS: Cell[] = [
  { model: "mimo-v2.6-flash-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "nemotron-3-ultra-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 2 },
- { model: "space-bunny-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "longcat-2.5-preview-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "ling-3.1-flash-free", effortLabel: "high", effortSent: "high", perPath: 2 },
  { model: "glm-5.3-flash-free", effortLabel: "high", effortSent: "high", perPath: 2 },
@@ -530,7 +529,7 @@ async function main(): Promise<void> {
    { model: "nemotron-3.5-lightning-free", effortLabel: "high", effortSent: "high", perPath: 1, wantPath: "relay", attemptInPath: 1 },
   ]
   : buildPlan(quick ? 1 : reps, only);
- console.log(`bench-zen-relay-direct: ${plan.length} attempt(s)${smoke ? " (smoke: 1 direct + 1 relay)" : quick ? " (quick: 12 cells x D/R x 1)" : " (full direct-vs-relay matrix)"}`);
+ console.log(`bench-zen-relay-direct: ${plan.length} attempt(s)${smoke ? " (smoke: 1 direct + 1 relay)" : quick ? " (quick: 11 cells x D/R x 1)" : " (full direct-vs-relay matrix)"}`);
 
  const { server, port } = await startProxy(PORT);
  if (server === null) throw new Error(`port ${PORT} already held; refusing to attach (relay state would be foreign)`);

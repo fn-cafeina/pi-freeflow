@@ -60,11 +60,11 @@ test("1M context window models are properly configured", () => {
 		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
 		"glm-5.3-flash-free",
+		"cat-jam-free",
+		"mimo-v2.6-flash-free",
 		"exo-free",
 		"beam-free",
-		"mimo-v2.6-flash-free",
 		"deepseek-v4.1-flash-free",
-		"space-bunny-free",
 		"longcat-2.5-preview-free",
 		"nemotron-3.5-lightning-free",
 		"nemotron-3.5-super-vl-free",
@@ -106,7 +106,7 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
  assert.equal(mimo.contextWindow, 1_048_576);
  assert.equal(mimo.maxTokens, 131_072);
  assert.equal(mimo.reasoning, true);
- assert.deepEqual(mimo.input, ["text", "image", "video"]);
+ assert.deepEqual(mimo.input, ["text", "image"]);
  assert.equal(mimo.thinkingLevelMap?.minimal, "low");
  assert.equal(mimo.thinkingLevelMap?.xhigh, "high");
  assert.equal(getModelUpstream("mimo-v2.6-flash-free"), "opencode");
@@ -127,8 +127,9 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 		assert.equal(glm.reasoning, true);
 		assert.equal(glm.contextWindow, 1_048_576);
 		assert.equal(glm.maxTokens, 131_072);
-		assert.deepEqual(glm.input, ["text", "image", "video"]);
-		assert.equal(glm.thinkingLevelMap?.minimal, "minimal");
+		assert.deepEqual(glm.input, ["text", "image"]);
+		assert.equal(glm.thinkingLevelMap?.minimal, null);
+		assert.equal(glm.thinkingLevelMap?.medium, null);
 		assert.equal(glm.thinkingLevelMap?.max, "max");
 		assert.equal(getModelUpstream("glm-5.3-flash-free"), "opencode");
 		assert.equal(getModelUpstream("glm-5.3-flash"), "opencode");
@@ -150,7 +151,8 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 		assert.equal(exo.maxTokens, 131_072);
 		assert.deepEqual(exo.input, ["text", "image"]);
 		assert.equal(exo.thinkingLevelMap?.high, "high");
-		assert.equal(exo.thinkingLevelMap?.minimal, null);
+		assert.equal(exo.thinkingLevelMap?.minimal, "minimal");
+		assert.equal(exo.thinkingLevelMap?.xhigh, "xhigh");
 		assert.equal(exo.thinkingLevelMap?.max, null);
 		assert.equal(getModelUpstream("exo-free"), "opencode");
 		assert.equal(getModelUpstream("exo"), "opencode");
@@ -190,7 +192,8 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(resolveCanonicalModelId("north-mini-code"), "cohere/north-mini-code:free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning:free"), "nemotron-3.5-lightning:free");
- assert.equal(resolveCanonicalModelId("space-bunny"), "space-bunny-free");
+ // space-bunny-free was deprecated upstream on 2026-10-20; its alias is gone too.
+ assert.equal(resolveCanonicalModelId("space-bunny"), "space-bunny");
  // removed wrong cross-lab aliases must no longer resolve
  assert.equal(resolveCanonicalModelId("claude-sonnet-4.5-contributor-free"), "claude-sonnet-4.5-contributor-free");
  assert.equal(resolveCanonicalModelId("minimax-m2.1-free"), "minimax-m2.1-free");
@@ -233,54 +236,45 @@ test("every non-reasoning model stays plain (no thinkingLevelMap)", () => {
   assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must not declare a map`);
  }
 });
-test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
- // Values reconciled 2026-10-20 against models.dev, the live Kilo gateway
- // listing, the live OpenRouter listing and the OMP committed catalog: a free
+test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
+ // Values reconciled 2026-10-20 from published datasheets (models.dev, the live
+ // Kilo and OpenRouter model listings, and the OMP committed catalog): a free
  // and a non-free variant of the same underlying model are treated as ONE
- // model, and each field takes the highest spec across those twins
+ // model, and each field takes the highest published spec across those twins
  // (context = highest, maxTokens = highest published output, reasoning = OR,
- // input = union of host-representable modalities). Two source artifacts are
- // discarded rather than merged: OpenRouter's shared 943717/943718 output
- // ceiling, and the lazy `max == ctx` echo a provider returns when a model has
- // no real output spec. Lane exceptions stay pinned to what the lane really
- // serves, not what its twin publishes: cat-jam (262K, measured recall ceiling),
- // the OVH contexts (OVH's own advertised windows) and dots-note (the 384K its
- // only provider serves, not the 512K the gateway advertises). Change only with
- // a fresh live verification.
+ // input = union of host-representable modalities). Known artifacts are
+ // discarded: OpenRouter's shared 943717/943718 output ceiling and the lazy
+ // `max == ctx` echo a provider returns when a model has no real output spec.
+ // Lane-owned hard caps stay authoritative where the lane refuses above them:
+ // OVH's advertised windows, the 1,000,000-token Nemotron 3 Ultra cap, and
+ // Dots3-Note's 393,216 served provider window. Change only with a fresh
+ // datasheet check or a new boundary/recall probe.
  const locked: Record<string, { ctx: number; max: number; reasoning: boolean }> = {
   // OpenCode Zen
-  // Added 2026-10-13 (live: Zen listing + keyless chat 200; chat-only,
-  // /v1/responses answers 400). Efforts re-probed 2026-10-16: low..max all
-  // answer 200; minimal/none/bogus answer 400 with the supported set
-  // (max/xhigh/high/medium/low) enumerated in the error.
-  // Context is 262_144 — the MEASURED ceiling, not the published one: the
-  // needle is recalled at 248,232 prompt tokens and lost at 250,272, while the
-  // gateway keeps answering 200 all the way to ~1M and truncates silently.
-  // Acceptance is not capability; do not raise this from a 200, and do not
-  // raise it to the twin's published 1,048,576 either.
-  "cat-jam-free": { ctx: 262_144, max: 131_072, reasoning: true },
-  // Added 2026-09-22 (live: Zen /v1/models + keyless chat 200 on mimo-v2.6-flash-free)
+  // Datasheet: 1,048,576 ctx (models.dev opencode/opencode-go + Vercel twin);
+  // 131,072 output. Endpoint refuses 1.05M; a 900,337-token needle probe
+  // recalled. Effort ladder low..max per the free and paid datasheets.
+  "cat-jam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Built-in catalog spec: 1,048,576 ctx / 131,072 output. The free lane's
+  // runtime cap is ~348K; the catalog follows the model's highest spec.
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Added 2026-09-23 (live: Zen listing + keyless chat 200; models.dev 1M ctx / 512K out)
-  "space-bunny-free": { ctx: 1_048_576, max: 524_288, reasoning: true },
   // Added 2026-09-27 (live: Zen listing + keyless chat 200; models.dev 1,048,576 ctx / 131,072 out)
   "longcat-2.5-preview-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // Reconciled 2026-10-20: 1,048,576 ctx / 182,520 output per the NVIDIA family
-  // origin and the paid OpenRouter twin (Zen's free entry advertises 1M / 128K).
-  "nemotron-3-ultra-free": { ctx: 1_048_576, max: 182_520, reasoning: true },
-  "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 262_144, reasoning: true },
+  // Reconciled 2026-10-20: the lane caps at 1,000,000 (a 1.29M-token request
+  // is refused with "maximum context length is 1000000 tokens"); output 182,520
+  // is the NVIDIA family ceiling.
+  "nemotron-3-ultra-free": { ctx: 1_000_000, max: 182_520, reasoning: true },
+  // Datasheet: 235,929 is the highest published output below the 1M window;
+  // the 262,144 entries repeat the context as an output cap.
+  "nemotron-3.5-lightning-free": { ctx: 1_000_000, max: 235_929, reasoning: true },
   // Added 2026-10-16 (issue #62): live Zen /v1/models listing + chat 200 through
   // the fingerprint path. Reconciled 2026-10-20: 1,048,576 ctx (the models.dev
   // opencode twin and the NVIDIA family origin both publish it) and 235,929
   // output, the highest published ceiling across the twins.
   "nemotron-3.5-super-vl-free": { ctx: 1_048_576, max: 235_929, reasoning: true },
   "big-pickle": { ctx: 200_000, max: 32_000, reasoning: true },
-	// Added 2026-10-16 (issue #71): Zen v1.19.2 free id, chat 200 through the
-	// fingerprint path. Reconciled 2026-10-20: 1,048,576 ctx / 131,072 output,
-	// matching the non-free twin (z-ai/glm-5.3-flash, Cline lane) and the highest
-	// twin output ceiling; models.dev's 200,000 ctx / 32,000 out under-reports
-	// both (probe recalled a marker at ~250K words; the gateway accepted up to
-	// 131,072).
+	// Built-in catalog spec: 1,048,576 context. The free lane's runtime cap is
+	// ~297K; the catalog follows the model's highest spec.
 	"glm-5.3-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
 	// Added 2026-10-17: Reflection AI's Beam 501B open-weight MoE model, limited-time
 	// free model on Zen (/zen/v1/models: beam-free); boundary probe up to 900k words (~1.1M tokens).
@@ -300,20 +294,21 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // the highest twin figure; models.dev rounds it to 384,000.
   "deepseek-v4.1-flash-free": { ctx: 1_048_576, max: 393_216, reasoning: true },
   // KiloCode Gateway
-  // Kilo advertises 512,000 ctx / 460,800 out, but the only provider behind
-  // this free id (atlas-cloud) serves a 393,216-token total window; the
-  // max_tokens boundary shifts with prompt_tokens (probed 2026-10-20), so the
-  // declared window is the served one and the output budget keeps 131,072
-  // tokens of prompt headroom.
+  // Kilo publishes 512,000 ctx / 460,800 out, but the only provider behind
+  // this free id (atlas-cloud) serves a 393,216-token total window. Re-probed
+  // 2026-10-20: max_tokens 393,195 answers 200 with a 20-token prompt;
+  // 460,800 answers 400. The declared budget keeps prompt headroom.
   "dots-studio/dots-3-note-preview:free": { ctx: 393_216, max: 262_144, reasoning: true },
   // Reconciled 2026-10-20: 262,144 ctx (256K was a rounded-down copy) / 65,536 out.
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free": { ctx: 262_144, max: 65_536, reasoning: true },
-  // Reconciled 2026-10-20: 1,048,576 ctx / 182,520 output per the NVIDIA family origin.
-  "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_048_576, max: 182_520, reasoning: true },
-  "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 262_144, reasoning: true },
-  "nvidia/nemotron-3-super-120b-a12b:free": { ctx: 262_144, max: 262_144, reasoning: true },
+  // Reconciled 2026-10-20: the gateway caps this id at 1,000,000 (a 1.11M-token
+  // request is refused with "maximum context length is 1000000 tokens").
+  "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_000_000, max: 182_520, reasoning: true },
+  "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 235_929, reasoning: true },
+  "nvidia/nemotron-3-super-120b-a12b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "cohere/north-mini-code:free": { ctx: 256_000, max: 64_000, reasoning: true },
-  // Reconciled 2026-10-20: 1,048,576 ctx / 131,072 output per the published twins.
+  // Built-in catalog spec: 1,048,576 context. The free gateway's runtime cap
+  // is 262,144; the catalog follows the model's highest spec.
   "poolside/laguna-s-2.1:free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "poolside/laguna-xs-2.1:free": { ctx: 262_144, max: 32_768, reasoning: true },
   // Reconciled 2026-10-20: 128,000 ctx per the published twin; output stays 32,768.
@@ -327,21 +322,18 @@ test("catalog spec lock: live-verified ctx/max/reasoning per model", () => {
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
-  // OVHcloud AI Endpoints, keyless direct-only. Added 2026-10-13: live
-  // /v1/models listing + keyless chat 200 + SSE with real tool_calls. Contexts
-  // are OVH's own advertised windows (the lane hard-caps there — a twin with a
-  // larger window on another provider is not served here); max is the highest
-  // published ceiling OVH accepts with a small prompt. OVH's
-  // max_completion_tokens echoes the context window, and prompt + max reaching
-  // that window is refused (probed 2026-10-20): 131,072 is accepted for every
-  // Qwen, while the 32K-output models use their published 32,768.
-  // reasoning is read off a populated `reasoning` field on a non-tool answer.
-  "ovh-free/gpt-oss-120b": { ctx: 131_072, max: 131_072, reasoning: true },
-  "ovh-free/gpt-oss-20b": { ctx: 131_072, max: 131_072, reasoning: true },
-  "ovh-free/Qwen3.5-397B-A17B": { ctx: 262_144, max: 131_072, reasoning: true },
-  "ovh-free/Qwen3.5-9B": { ctx: 262_144, max: 131_072, reasoning: true },
-  "ovh-free/Qwen3.6-27B": { ctx: 262_144, max: 131_072, reasoning: true },
-  "ovh-free/Qwen3.8-27B": { ctx: 262_144, max: 131_072, reasoning: true },
+  // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
+  // advertised windows (the lane hard-caps there); max is the highest
+  // published output below the window. OVH's max_completion_tokens echoes the
+  // context, so that echo is discarded: 235,929 for the 397B and 3.8, 65,536
+  // for the 9B, 3.6 and both gpt-oss models, 32,768 for Mistral and Llama.
+  // reasoning comes from the lane's own rows (models.dev ovhcloud).
+  "ovh-free/gpt-oss-120b": { ctx: 131_072, max: 65_536, reasoning: true },
+  "ovh-free/gpt-oss-20b": { ctx: 131_072, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.5-397B-A17B": { ctx: 262_144, max: 235_929, reasoning: true },
+  "ovh-free/Qwen3.5-9B": { ctx: 262_144, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.6-27B": { ctx: 262_144, max: 65_536, reasoning: true },
+  "ovh-free/Qwen3.8-27B": { ctx: 262_144, max: 235_929, reasoning: true },
   "ovh-free/Mistral-Small-3.2-24B-Instruct-2506": { ctx: 131_072, max: 32_768, reasoning: false },
   "ovh-free/Meta-Llama-3_3-70B-Instruct": { ctx: 131_072, max: 32_768, reasoning: false },
  };
@@ -370,9 +362,13 @@ test("2026-10-15 Zen DeepSeek V4.1 Flash carries probe-measured specs", () => {
  assert.deepEqual(ds.input, ["text", "image"]);
  // Chat-only upstream: a Responses request is refused, so no api override.
  assert.equal(ds.api, undefined);
- // Every effort level is accepted live, so none may be locked off.
- for (const level of ["minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+ // Both datasheets publish exactly low/high/max; the unlisted rungs stay null
+ // so the host cannot offer an effort the vendor does not declare.
+ for (const level of ["low", "high", "max"] as const) {
   assert.equal(ds.thinkingLevelMap?.[level], level, `${level} must stay selectable`);
+ }
+ for (const level of ["minimal", "medium", "xhigh"] as const) {
+  assert.equal(ds.thinkingLevelMap?.[level], null, `${level} must stay locked off`);
  }
  assert.equal(ds.thinkingLevelMap?.off, null);
  assert.equal(getModelUpstream("deepseek-v4.1-flash-free"), "opencode");
@@ -395,7 +391,7 @@ test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Su
  const superVl = getModelDef("nemotron-3.5-super-vl-free");
  assert.ok(superVl, "nemotron-3.5-super-vl-free must be a static catalog entry");
  assert.equal(superVl.reasoning, true);
- assert.deepEqual(superVl.input, ["text", "image", "video"]);
+ assert.deepEqual(superVl.input, ["text", "image"]);
  assert.deepEqual(superVl.thinkingLevelMap, {
   off: null,
   minimal: "minimal",
@@ -541,17 +537,20 @@ test("2026-10-13 OVH spec-drift guard: context windows change only with a delibe
  assert.equal(Object.keys(lockedCtx).length, OVH_MODELS.length, "every OVH model is drift-guarded");
 });
 
-test("2026-10-13 OVH reasoning models lock the two confirmed effort levels", () => {
- for (const m of OVH_MODELS) {
-  if (!m.reasoning) {
-   assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must declare no map`);
-   continue;
-  }
-  const map = m.thinkingLevelMap!;
-  assert.deepEqual(map, { off: null, minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: null }, `${m.id} effort map`);
-  // An omitted key leaves the level selectable in the host, so every level
-  // must be present explicitly — minimal included.
-  assert.ok("minimal" in map, `${m.id}: minimal must be an explicit null, not omitted`);
-  assert.ok("medium" in map && "xhigh" in map && "max" in map, `${m.id}: unconfirmed levels must be explicit nulls`);
- }
+test("2026-10-13 OVH reasoning models lock the confirmed effort ladders", () => {
+	const base = { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null };
+	const qwen = { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: null, max: null };
+	for (const m of OVH_MODELS) {
+		if (!m.reasoning) {
+			assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must declare no map`);
+			continue;
+		}
+		// The 3.6/3.8 Qwens publish one extra rung (minimal); the 3.5 pairs and
+		// both gpt-oss models start at low. No lane model offers xhigh or max.
+		const expected = m.id.includes("Qwen3.6") || m.id.includes("Qwen3.8") ? qwen : base;
+		assert.deepEqual(m.thinkingLevelMap, expected, `${m.id} effort map`);
+		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
+			assert.ok(level in m.thinkingLevelMap!, `${m.id}: ${level} must be explicit`);
+		}
+	}
 });

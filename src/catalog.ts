@@ -101,6 +101,9 @@ export const DEAD_MODEL_IDS = new Set<string>([
  "inclusionai/ling-3.0-flash-fin:free",
  "mimo-v2.5-free",
  "stealth/space-bunny-alpha",
+ // space-bunny-free: deprecated on the Zen free tier (2026-10-20) — the
+ // endpoint answers 410 ModelDeprecated and points at minimax-m3.1-flash-free.
+ "space-bunny-free",
  "qwen/qwen3.8-27b:free",
  "nvidia/nemotron-3.5-content-safety:free",
  "fledge-alpha-free",
@@ -174,7 +177,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 35 verified models for 0ms instant availability.
+ * Initialized with all 34 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,

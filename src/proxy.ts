@@ -1794,25 +1794,42 @@ export function startProxy(
           streamCloak,
           {
            upstreamContentType: response.headers.get("content-type"),
-           refire: async () => {
+           refire: async (reason) => {
             if (midStreamRefires >= 1) return null;
             midStreamRefires += 1;
             const cutter = servedIssuer ?? "direct";
+            const why =
+             reason === "rate_limit"
+              ? "rate-limited"
+              : reason === "model"
+               ? "model-failed"
+               : "truncated";
             log(
-             "warn",
-             `responses stream truncated on ${cutter === "direct" ? "direct upstream" : `relay ${cutter}`} — re-firing once on next relay`,
-             { model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: cutter },
+             reason === "rate_limit" ? "info" : "warn",
+             `responses stream ${why} on ${cutter === "direct" ? "direct upstream" : `relay ${cutter}`} — re-firing once on next relay`,
+             { model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: cutter, reason },
              reqId,
             );
             let retryRes: Response;
             // Mark the cutter BEFORE re-sending: candidate ordering partitions
             // healthy-first, so only a pre-marked (cooling) cutter guarantees
             // the re-fire rolls to a sibling instead of retrying the relay
-            // that just dropped us. A mark here is deserved either way — the
-            // relay demonstrably cut a live stream. (If the re-fire itself
-            // finds nothing usable, the pipe fallthrough may add its own mark
-            // on socket-error paths; bounded by the 4x escalation cap.)
-            if (cutter !== "direct") markRelayFailure(cutter, 0, "stream truncated mid-stream");
+            // that just dropped us. A 429 cools for the rate-limit window; a
+            // truncation/model fault keeps the existing relay-rotation mark.
+            // (If the re-fire itself finds nothing usable, the pipe
+            // fallthrough may add its own mark on socket-error paths; bounded
+            // by the 4x escalation cap.)
+            if (cutter !== "direct") {
+             markRelayFailure(
+              cutter,
+              reason === "rate_limit" ? 429 : 0,
+              reason === "rate_limit"
+               ? "upstream rate-limited mid-stream"
+               : reason === "model"
+                ? "upstream model failed mid-stream"
+                : "stream truncated mid-stream",
+             );
+            }
             try {
              retryRes = await sendViaRelay(bodyForUpstream);
              if (responsesRequest) {

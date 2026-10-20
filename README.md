@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 35 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 34 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **35 free models** | 12 from OpenCode Zen, 13 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **34 free models** | 11 from OpenCode Zen, 13 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
@@ -54,7 +54,7 @@ omp
 **OMP, one shot:**
 ```bash
 omp -p --model freeflow/deepseek-v4.1-flash-free "build me a SaaS"
-omp -p --model freeflow/space-bunny:high "solve this bug"   # alias + thinking level
+omp -p --model freeflow/longcat:high "solve this bug"   # alias + thinking level
 ```
 
 **Pi, interactive:**
@@ -65,7 +65,7 @@ pi
 
 **Pi, one shot:**
 ```bash
-pi -p --model freeflow/space-bunny:high "solve this bug"
+pi -p --model freeflow/longcat:high "solve this bug"
 ```
 
 Model IDs accept a full canonical ID, a short alias (see the tables below),
@@ -213,31 +213,33 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 35 models, one command
+### 34 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-20, and a free and a non-free variant of the same model share one spec — the highest published context window, output ceiling, and input modalities across its twins. Three lane limits stay authoritative over that reconciliation: cat-jam's probe-measured 256K context window, OVH's advertised context windows, and the 384K window its only provider actually serves for Dots3-Note.
-#### OpenCode Zen (12 models), Chat Completions API
+Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-20: a free and a non-free variant of the same model share the highest published context window, output ceiling, and input modalities across its twins. The catalog follows that published spec even where a free lane enforces a lower runtime cap; the authentic upstream error is surfaced above it. (Measured runtime caps: MiMo ~348K, GLM 5.3 Flash ~297K, Laguna S 262K.) Lane-published hard caps stay authoritative where the lane refuses above them: OVH's advertised context windows, the 1,000,000-token Nemotron 3 Ultra ceiling, and Dots3-Note's 393,216 served window (its only provider refused a 460,800 output budget on 2026-10-20).
+
+The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
+
+#### OpenCode Zen (11 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `cat-jam-free` | Cat Jam | **256K** (262.144) | **131K** (131.072) | `low … max` | ❌ |
-| `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh`\* | ✅ |
-| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal … xhigh` | ❌ |
+| `cat-jam-free` | Cat Jam | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
+| `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **128K** (131.072) | `minimal … xhigh`\* | ✅ |
+| `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-super-vl-free` | NVIDIA | **1M** (1.048.576) | **235K** (235.929) | `minimal … xhigh` | ✅ |
-| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.048.576) | **182K** (182.520) | `minimal … xhigh` | ❌ |
+| `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **182K** (182.520) | `minimal … xhigh` | ❌ |
 | `big-pickle` | Big Pickle | **200K** (200.000) | **32K** (32.000) | `high / max` | ❌ |
-| `space-bunny-free` | Stealth preview (lab undisclosed) | **1M** (1.048.576) | **512K** (524.288) | `low … max` | ✅ |
-| `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.048.576) | **131K** (131.072) | `minimal … max` | ✅ |
-| `glm-5.3-flash-free` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `minimal … max` | ✅ |
+| `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
+| `glm-5.3-flash-free` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `beam-free` | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
-| `exo-free` | Undisclosed | **1M** (1.048.576) | **131K** (131.072) | `high` | ✅ |
-| `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `minimal … max` | ✅ |
+| `exo-free` | Undisclosed | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
+| `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `low / high / max` | ✅ |
 
 #### KiloCode Gateway (13 models), OpenRouter compatible
 
@@ -247,9 +249,9 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `dots-3-note-preview` (`dots-studio/...:free`) | Dots Studio | **384K** (393.216) | **256K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
-| `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.048.576) | **182K** (182.520) | `minimal…xhigh`\* | ❌ |
-| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
-| `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **262K** (262.144) | `minimal…xhigh`\* | ❌ |
+| `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **182K** (182.520) | `minimal…xhigh`\* | ❌ |
+| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
+| `nemotron-3-super` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
 | `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
 | `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
 | `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
@@ -257,7 +259,7 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
-| `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…xhigh`\* | ✅ |
+| `inkling-small` (`thinkingmachines/inkling-small:free`) | Thinking Machines | **1M** (1.048.576) | **262K** (262.144) | `minimal…max`\* | ✅ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
@@ -277,17 +279,17 @@ Each account can only be saved once: an extra login for an account you already h
 
 Anonymous access — no account, no key, nothing to sign in to. Direct only (never through the relay pool), because OVH has no per-IP gate for relays to route around. OVH rate-limits anonymous callers per IP, so a burst of parallel subagents can hit `429 API rate limit exceeded`; the model list itself never costs anything.
 
-Pick them with the slash-free short name (the full ID is in parentheses). Only `low` and `high` thinking levels are offered, because those are the two OVH confirmed.
+Pick them with the slash-free short name (the full ID is in parentheses). The lane's rows publish `low`/`medium`/`high`; the 3.6 and 3.8 Qwens add `minimal`, and nothing on this lane offers `xhigh`/`max`.
 All eight talk the normal chat API. Hosts that prefer the responses API work too — the proxy maps that shape to chat and maps the answer back, so tool calls and streamed output behave exactly as they do on the other providers.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `gpt-oss-120b` (`ovh-free/gpt-oss-120b`) | OpenAI | **128K** (131.072) | **131K** (131.072) | `low/high` | ❌ |
-| `gpt-oss-20b` (`ovh-free/gpt-oss-20b`) | OpenAI | **128K** (131.072) | **131K** (131.072) | `low/high` | ❌ |
-| `qwen3.5-397b` (`ovh-free/Qwen3.5-397B-A17B`) | Alibaba Qwen | **256K** (262.144) | **128K** (131.072) | `low/high` | ✅ |
-| `qwen3.5-9b` (`ovh-free/Qwen3.5-9B`) | Alibaba Qwen | **256K** (262.144) | **128K** (131.072) | `low/high` | ✅ |
-| `qwen3.6-27b` (`ovh-free/Qwen3.6-27B`) | Alibaba Qwen | **256K** (262.144) | **128K** (131.072) | `low/high` | ✅ |
-| `qwen3.8-27b` (`ovh-free/Qwen3.8-27B`) | Alibaba Qwen | **256K** (262.144) | **128K** (131.072) | `low/high` | ✅ |
+| `gpt-oss-120b` (`ovh-free/gpt-oss-120b`) | OpenAI | **128K** (131.072) | **65K** (65.536) | `low/medium/high` | ❌ |
+| `gpt-oss-20b` (`ovh-free/gpt-oss-20b`) | OpenAI | **128K** (131.072) | **65K** (65.536) | `low/medium/high` | ❌ |
+| `qwen3.5-397b` (`ovh-free/Qwen3.5-397B-A17B`) | Alibaba Qwen | **256K** (262.144) | **235K** (235.929) | `low/medium/high` | ✅ |
+| `qwen3.5-9b` (`ovh-free/Qwen3.5-9B`) | Alibaba Qwen | **256K** (262.144) | **65K** (65.536) | `low/medium/high` | ✅ |
+| `qwen3.6-27b` (`ovh-free/Qwen3.6-27B`) | Alibaba Qwen | **256K** (262.144) | **65K** (65.536) | `minimal … high` | ✅ |
+| `qwen3.8-27b` (`ovh-free/Qwen3.8-27B`) | Alibaba Qwen | **256K** (262.144) | **235K** (235.929) | `minimal … high` | ✅ |
 | `mistral-small-3.2` (`ovh-free/Mistral-Small-3.2-24B-Instruct-2506`) | Mistral AI | **128K** (131.072) | **32K** (32.768) | ❌ | ✅ |
 | `llama-3.3-70b` (`ovh-free/Meta-Llama-3_3-70B-Instruct`) | Meta | **128K** (131.072) | **32K** (32.768) | ❌ | ❌ |
 
@@ -382,7 +384,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 35-model catalog definitions
+├── models.ts                # 34-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

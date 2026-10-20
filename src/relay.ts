@@ -186,6 +186,8 @@ export async function relayFetch(
 	const disabledRelays: string[] = [];
 	/** Bare-500 roll-once cap: one extra attempt per relayFetch turn. */
 	let sawBare500 = false;
+	/** True only while every candidate that produced a response answered 429. */
+	let rateLimitOnly = true;
 	const u = new URL(url);
 	const relayTarget = `${u.protocol}//${u.host}`;
 	const relayPath = `${u.pathname}${u.search}`;
@@ -218,6 +220,7 @@ export async function relayFetch(
 	for (let i = 0; i < candidates.length; i++) {
 		if (hedgeSkipNext) {
 			hedgeSkipNext = false;
+			rateLimitOnly = false;
 			continue;
 		}
 		let targetUrl = candidates[i];
@@ -385,6 +388,7 @@ export async function relayFetch(
 			// Not a relay health signal, so no failure marking — try the next
 			// relay (a different host may accept it), else the direct fallback.
 			if (res.status === 413) {
+				rateLimitOnly = false;
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
 				lastResponseRelay = targetUrl;
@@ -418,6 +422,7 @@ export async function relayFetch(
 					!res.headers.get("content-type")?.includes("json"));
 
 			if (isRelayEdge404) {
+				rateLimitOnly = false;
 				markRelayFailure(targetUrl, 404, "Deployment or route not found on relay host");
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
@@ -454,6 +459,7 @@ export async function relayFetch(
 					disabledBody = null;
 				}
 				if (isRelayDeploymentDisabled(res, disabledBody)) {
+					rateLimitOnly = false;
 					markRelayFailure(targetUrl, 402, "Deployment disabled (DEPLOYMENT_DISABLED) on relay host");
 					disabledRelays.push(targetUrl);
 					lastResponse?.body?.cancel().catch(() => {});
@@ -481,12 +487,29 @@ export async function relayFetch(
 				lastResponse?.body?.cancel().catch(() => {});
 				lastResponse = res;
 				lastResponseRelay = targetUrl;
+				if (res.status === 429) {
+					// A 429 is a transient per-relay rate limit, not a terminal
+					// verdict: the request is already moving to the next candidate.
+					// Keep the per-relay rotation silent (no warning toast, no
+					// per-relay WARN line) so the host never flashes "rate limited"
+					// while a sibling relay serves. A pool-wide 429 burst alert may
+					// still fire from markRelayFailure; the final verdict is logged
+					// once when the pool and direct fallback cannot serve the turn.
+					log(
+						"info",
+						`relay ${targetUrl} rate-limited in ${elapsed}s — auto-rotating to next relay`,
+						{ upstream: url, status: 429 },
+						rid,
+					);
+					continue;
+				}
 				log(
 					"warn",
 					`relay ${targetUrl} returned HTTP ${res.status} in ${elapsed}s — rolling to next relay`,
 					{ upstream: url, status: res.status },
 					rid,
 				);
+				rateLimitOnly = false;
 				const now = Date.now();
 				if (now - lastRollNotify > ROLL_NOTIFY_MS) {
 					lastRollNotify = now;
@@ -502,6 +525,7 @@ export async function relayFetch(
 			// relay-fault signal (413 precedent: roll without health penalty), so
 			// retry once on the next candidate instead of surfacing.
 			if (res.status === 500) {
+				rateLimitOnly = false;
 				if (!sawBare500) {
 					sawBare500 = true;
 					lastResponse?.body?.cancel().catch(() => {});
@@ -552,6 +576,7 @@ export async function relayFetch(
 			// below instead of cooling a healthy relay. Non-401/403 client errors
 			// keep their non-penalizing terminal path below too.
 			if (res.status === 403 || (res.status === 401 && (await isRelayAuthRejection(res)))) {
+				rateLimitOnly = false;
 				const authRejected = res.status === 401;
 				markRelayFailure(
 					targetUrl,
@@ -643,6 +668,7 @@ export async function relayFetch(
 			}
 			const elapsed = ((Date.now() - attemptStart) / 1000).toFixed(1);
 			lastError = err;
+			rateLimitOnly = false;
 			const errMsg =
 				(err as Error)?.name === "AbortError"
 					? `relay header timeout (${Math.round(UPSTREAM_HEADER_TIMEOUT_MS / 1000)}s exceeded)`
@@ -661,10 +687,21 @@ export async function relayFetch(
 	// Full fallback: attempt direct fetch to upstream
 	const directStart = Date.now();
 	try {
-		log("warn", "relays bypassed/exhausted — attempting direct fetch to upstream", {
-			upstream: url,
-			sizeKB: bodySizeKB,
-		}, rid);
+		// A pool that only produced 429s is still in the middle of a transient
+		// rate-limit episode; trying direct is recovery, not a warning-worthy
+		// failure. Other exhaustion causes keep their WARN.
+		const exhaustedByRateLimit = lastResponse?.status === 429 && rateLimitOnly;
+		log(
+			exhaustedByRateLimit ? "info" : "warn",
+			exhaustedByRateLimit
+				? "all relays rate-limited — trying direct upstream"
+				: "relays bypassed/exhausted — attempting direct fetch to upstream",
+			{
+				upstream: url,
+				sizeKB: bodySizeKB,
+			},
+			rid,
+		);
 
 		const directHeaders = new Headers(opts.headers);
 		directHeaders.delete("x-relay-target");

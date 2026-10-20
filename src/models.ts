@@ -1,10 +1,10 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 34 verified free models (live-verified 2026-10-20):
+ * Defines the 32 verified free models (live-verified 2026-10-21):
  * - 11 OpenCode Zen models (all Chat Completions — the last Responses model,
  *   muse-spark-1.2-contributor-free, was deprecated upstream 2026-10-18)
- * - 13 KiloCode Keyless Gateway models (OpenRouter format)
+ * - 11 KiloCode Keyless Gateway models (OpenRouter format)
  * - 2 Cline direct-only models (per-user pool; one is Responses API)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
  */
@@ -337,16 +337,6 @@ const KILO_REASONING_MAP: ThinkingLevelMap = {
 };
 
 /**
- * Kilo's published ladder tops out at `max` for Inkling Small (its free entry
- * lists none/minimal/low/medium/high/max), unlike the other Kilo models whose
- * datasheets stop at xhigh. Same shape, one extra rung.
- */
-const KILO_REASONING_MAX_MAP: ThinkingLevelMap = {
- ...KILO_REASONING_MAP,
- max: "max",
-};
-
-/**
  * KiloCode Gateway free models (keyless — https://kilo.ai/docs/gateway).
  */
 export const KILO_MODELS: ModelDef[] = [
@@ -397,18 +387,6 @@ export const KILO_MODELS: ModelDef[] = [
   contextWindow: 1_000_000,
   // Highest published output below the window (OpenRouter/Kilo paid twins);
   // the 262,144 figures repeat the context as the output cap.
-  maxTokens: 235_929,
-  input: ["text"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  id: "nvidia/nemotron-3-super-120b-a12b:free",
-  name: "Nemotron 3 Super 120B [Kilo]",
-  reasoning: true,
-  // 262,144 ctx per every direct provider; 235,929 output is the highest
-  // published value below the window (the 262,144 figure repeats the context).
-  contextWindow: 262_144,
   maxTokens: 235_929,
   input: ["text"],
   thinkingFormat: "openrouter",
@@ -478,16 +456,6 @@ export const KILO_MODELS: ModelDef[] = [
   input: ["text", "image"],
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
- },
- {
-  id: "thinkingmachines/inkling-small:free",
-  name: "Inkling Small [Kilo]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 262_144,
-  input: ["text", "image"],
-  thinkingFormat: "openrouter",
-  thinkingLevelMap: KILO_REASONING_MAX_MAP,
  },
  {
   // Added 2026-10-09: live on Kilo free list (isFree:true, 0/0 pricing,
@@ -726,13 +694,11 @@ export const MODEL_ALIASES: Record<string, string> = {
  "nemotron-3-nano-omni": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
  "nemotron-3-ultra-550b": "nvidia/nemotron-3-ultra-550b-a55b:free",
  "nemotron-3.5-lightning": "nvidia/nemotron-3.5-lightning:free",
- "nemotron-3-super": "nvidia/nemotron-3-super-120b-a12b:free",
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
  "glm-5.3-flash": "glm-5.3-flash-free",
  "exo": "exo-free",
  "glyph-cluster": "stealth/glyph-cluster",
- "inkling-small": "thinkingmachines/inkling-small:free",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
  "longcat-2.5-preview": "longcat-2.5-preview-free",

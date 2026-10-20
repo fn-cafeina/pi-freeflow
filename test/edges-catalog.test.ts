@@ -247,7 +247,10 @@ test("mergeCatalog drops paid upstream ids like claude-fable-5-1 (issue #6)", ()
 test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid and dead", () => {
 	assert.equal(isFreeCatalogId("mimo-v2.6-flash-free"), true);
 	assert.equal(isFreeCatalogId("mimo-v2.5-free"), false);
-	assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), true);
+	assert.equal(isFreeCatalogId("thinkingmachines/inkling-small:free"), false);
+	// Retired 2026-10-21: Kilo answers 404 unavailable_model for inkling-small and
+	// 404 "Function not found" for nemotron-3-super-120b-a12b.
+	assert.equal(isFreeCatalogId("nvidia/nemotron-3-super-120b-a12b:free"), false);
 	// stepfun/step-5-preview-free was demoted to paid on Kilo (2026-10-16).
 	assert.equal(isFreeCatalogId("stepfun/step-5-preview-free"), false);
 	assert.equal(isFreeCatalogId("lab/new-model/free"), true);

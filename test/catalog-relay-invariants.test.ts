@@ -7,13 +7,13 @@ import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from 
 import { isSubstantial } from "../src/stream-pipe.ts";
 import { loadRelayCore } from "./_relay-core.ts";
 
-test("catalog 34 = 11 OpenCode + 13 Kilo + 2 Cline + 8 OVH", () => {
+test("catalog 32 = 11 OpenCode + 11 Kilo + 2 Cline + 8 OVH", () => {
 	assert.equal(OPENCODE_MODELS.length, 11);
-	assert.equal(KILO_MODELS.length, 13);
+	assert.equal(KILO_MODELS.length, 11);
 	assert.equal(CLINE_MODELS.length, 2);
 	assert.equal(OVH_MODELS.length, 8);
-	assert.equal(ALL_MODELS.length, 34);
-	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 34);
+	assert.equal(ALL_MODELS.length, 32);
+	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 32);
 });
 
 test("aliases deduplicated and wrong removed", () => {
@@ -25,7 +25,7 @@ test("aliases deduplicated and wrong removed", () => {
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
  assert.equal(resolveCanonicalModelId("deepseek-v4.1-flash"), "deepseek-v4.1-flash-free");
  assert.equal(isKiloModel("dots-3-note-preview"), true);
-	assert.equal(Object.keys(MODEL_ALIASES).length, 29);
+	assert.equal(Object.keys(MODEL_ALIASES).length, 27);
 });
 
 test("log rotation 10MB x10", () => {

@@ -72,7 +72,6 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"poolside/laguna-s-2.1:free",
-		"thinkingmachines/inkling-small:free",
 	];
 
  for (const id of oneMillionModels) {
@@ -305,7 +304,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // request is refused with "maximum context length is 1000000 tokens").
   "nvidia/nemotron-3-ultra-550b-a55b:free": { ctx: 1_000_000, max: 182_520, reasoning: true },
   "nvidia/nemotron-3.5-lightning:free": { ctx: 1_000_000, max: 235_929, reasoning: true },
-  "nvidia/nemotron-3-super-120b-a12b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   "cohere/north-mini-code:free": { ctx: 256_000, max: 64_000, reasoning: true },
   // Built-in catalog spec: 1,048,576 context. The free gateway's runtime cap
   // is 262,144; the catalog follows the model's highest spec.
@@ -315,7 +313,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   "liquid/lfm-2.5-2.6b:free": { ctx: 128_000, max: 32_768, reasoning: true },
   "kilo-auto/free": { ctx: 256_000, max: 10_000, reasoning: true },
   "openrouter/free": { ctx: 200_000, max: 65_536, reasoning: true },
-	"thinkingmachines/inkling-small:free": { ctx: 1_048_576, max: 262_144, reasoning: true },
 	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
 	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
 	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
@@ -410,7 +407,8 @@ test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Su
 });
 
 test("new alias map resolves to canonical kilo ids", () => {
- assert.equal(resolveCanonicalModelId("inkling-small"), "thinkingmachines/inkling-small:free");
+ // inkling-small was retired with its model (2026-10-21): the alias is gone too.
+ assert.equal(resolveCanonicalModelId("inkling-small"), "inkling-small");
 	assert.equal(resolveCanonicalModelId("glyph-cluster"), "stealth/glyph-cluster");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
 	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash-free");

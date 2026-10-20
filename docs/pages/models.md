@@ -1,6 +1,6 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **34 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **32 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
@@ -37,7 +37,7 @@ pi-freeflow provides unified access to **34 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 34 Model Specifications
+## 32 Model Specifications
 
 ### OpenCode Zen (11 models)
 
@@ -55,7 +55,7 @@ pi-freeflow provides unified access to **34 curated free models** across four up
 | `exo-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `deepseek-v4.1-flash-free` | 1,048,576 | 393,216 | low, high, max | ✅ |
 
-### KiloCode Gateway (13 models)
+### KiloCode Gateway (11 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -63,14 +63,12 @@ pi-freeflow provides unified access to **34 curated free models** across four up
 | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | 262,144 | 65,536 | minimal..xhigh | ✅ |
 | `nvidia/nemotron-3-ultra-550b-a55b:free` | 1,000,000 | 182,520 | minimal..xhigh | ❌ |
 | `nvidia/nemotron-3.5-lightning:free` | 1,000,000 | 235,929 | minimal..xhigh | ❌ |
-| `nvidia/nemotron-3-super-120b-a12b:free` | 262,144 | 235,929 | minimal..xhigh | ❌ |
 | `cohere/north-mini-code:free` | 256,000 | 64,000 | minimal..xhigh | ❌ |
 | `poolside/laguna-s-2.1:free` | 1,048,576 | 131,072 | minimal..xhigh | ❌ |
 | `poolside/laguna-xs-2.1:free` | 262,144 | 32,768 | minimal..xhigh | ❌ |
 | `liquid/lfm-2.5-2.6b:free` | 128,000 | 32,768 | minimal..xhigh | ❌ |
 | `kilo-auto/free` | 256,000 | 10,000 | minimal..xhigh | ❌ |
 | `openrouter/free` | 200,000 | 65,536 | minimal..xhigh | ✅ |
-| `thinkingmachines/inkling-small:free` | 1,048,576 | 262,144 | minimal..max | ✅ |
 | `stealth/glyph-cluster` | 256,000 | 256,000 | minimal..xhigh | ❌ |
 
 ### Cline (2 models)

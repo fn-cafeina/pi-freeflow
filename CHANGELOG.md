@@ -19,6 +19,7 @@
   - Declare only text and image inputs. The host catalog has no video or audio input type, so upstream video/audio/PDF support (MiMo, GLM 5.3 Flash, Nemotron Super VL, Nano Omni) is documented in the README instead of being advertised in the picker.
 - Rate-limit rotation is now silent: a relay that answers 429 is cooled and deprioritized without a per-relay warning toast or per-relay WARN line while the pool still has a candidate. A pool-wide 429 burst alert still warns when many relays rate-limit in one minute. The rate-limit message appears only when no relay or direct fallback served the turn, including the existing 403-salvage path.
 - Model specs refreshed against the latest upstream catalogs. Free and paid variants of the same model now share the highest published context window, output ceiling, and input modalities, so a picker entry no longer understates what the model accepts.
+- Drop two Kilo models that stopped answering, so the picker only offers what is actually served: `nvidia/nemotron-3-super-120b-a12b:free` answers `404 Function ... Not found for account ...` from its Nvidia provider, and `thinkingmachines/inkling-small:free` answers `404 The requested model is currently unavailable`. Both verdicts reproduce from two independent egress IPs while the sibling Nvidia ids answer `200` with the same request shape. The catalog is 32 models; both ids stay on the retired list so a stale cache cannot bring them back.
 
 ## 1.39.0
 

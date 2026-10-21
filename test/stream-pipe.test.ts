@@ -16,8 +16,10 @@ import * as http from "node:http";
 
 import {
 	_resetSseStatsForTest,
+	_setBodyStallCutForTest,
 	getSseStats,
 	pipeUpstreamStream,
+	type StreamPipeOptions,
 } from "../src/stream-pipe.ts";
 import {
 	getRelayHealth,
@@ -52,6 +54,7 @@ class FakeResponse extends EventEmitter {
 	end(chunk?: Buffer | string): void {
 		if (chunk !== undefined) this.write(chunk);
 		this.writableEnded = true;
+		this.emit("done");
 	}
 
 	body(): string {
@@ -71,6 +74,7 @@ function pipe(
 	stream: PassThrough,
 	reqUrl: string,
 	relayUrl: string | undefined,
+	opts?: StreamPipeOptions,
 ): { res: FakeResponse; req: FakeRequest } {
 	const res = new FakeResponse();
 	const req = new FakeRequest(reqUrl);
@@ -80,6 +84,8 @@ function pipe(
 		req as unknown as http.IncomingMessage,
 		"test",
 		relayUrl,
+		undefined,
+		opts,
 	);
 	return { res, req };
 }
@@ -914,4 +920,92 @@ test("refire: a partial sequence from the cut stream never prefixes the replacem
 		!body.includes("\uFFFD"),
 		"the cut stream's pending byte must never leak into the replacement",
 	);
+});
+
+test("body-stall cut re-fires the turn on the replacement stream", async (t) => {
+	// Deterministic: the cut and every watchdog arm is a setTimeout timer.
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const restoreCut = _setBodyStallCutForTest(5_000);
+	resetAllRelayHealth();
+	try {
+		const reasons: Array<string | undefined> = [];
+		const rescueGate = Promise.withResolvers<PassThrough>();
+		const stream = new PassThrough();
+		const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL, {
+			refire: async (reason) => {
+				reasons.push(reason);
+				const next = new PassThrough();
+				rescueGate.resolve(next);
+				return next;
+			},
+		});
+		const opened = once(stream, "data");
+		stream.push(Buffer.from('data: {"delta":"first"}\n\n', "utf8"));
+		await opened;
+		// Virtual clock: no byte crosses the pipe for the whole cut window.
+		t.mock.timers.tick(5_000);
+		const rescue = await rescueGate.promise;
+		const closed = once(rescue, "close");
+		rescue.push(Buffer.from('data: {"delta":"rescue"}\n\n', "utf8"));
+		rescue.push(Buffer.from("data: [DONE]\n\n", "utf8"));
+		rescue.end();
+		await closed;
+
+		const body = res.body();
+		assert.ok(
+			body.includes('{"delta":"first"}'),
+			"bytes already forwarded stay on the client",
+		);
+		assert.ok(
+			body.includes('{"delta":"rescue"}'),
+			"the replacement stream continues the same turn",
+		);
+		assert.equal(count(body, "[DONE]"), 1, "exactly one terminal event");
+		assert.deepEqual(reasons, ["truncation"], "the rescue runs on the truncation path");
+		assert.equal(
+			getRelayHealth(RELAY_URL),
+			undefined,
+			"a rescued turn must not penalize the relay here — the proxy's refire owns the mark",
+		);
+	} finally {
+		restoreCut();
+	}
+});
+
+test("body-stall cut without a rescuer ends the turn with a synthetic terminal", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const restoreCut = _setBodyStallCutForTest(5_000);
+	resetAllRelayHealth();
+	try {
+		const stream = new PassThrough();
+		const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL, {
+			refire: async () => null,
+		});
+		const opened = once(stream, "data");
+		stream.push(Buffer.from('data: {"delta":"first"}\n\n', "utf8"));
+		await opened;
+		// Requesting "error" explicitly makes events.once treat it as a value
+		// event rather than a rejection trigger (same pattern as the
+		// genuine-error test above). The pipe's onError suspends on the
+		// (null-resolving) rescue await, so the turn's completion is awaited
+		// via FakeResponse's end event — never via stream "close", which
+		// events.once turns into an error-triggered rejection.
+		const errored = once(stream, "error");
+		const done = once(res, "done");
+		t.mock.timers.tick(5_000);
+		await errored;
+		await done;
+
+		const body = res.body();
+		assert.ok(body.includes('{"delta":"first"}'), "early bytes stay on the client");
+		assert.equal(count(body, "[DONE]"), 1, "synthetic terminal injected once");
+		assert.equal(
+			getRelayHealth(RELAY_URL)?.lastStatus,
+			0,
+			"an unrecoverable stall penalizes the relay like a genuine stream error",
+		);
+		assert.equal(isRelayHealthy(RELAY_URL), false);
+	} finally {
+		restoreCut();
+	}
 });

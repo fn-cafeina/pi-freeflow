@@ -143,7 +143,7 @@ To prevent network burst storms when multiple subagents boot simultaneously, the
 
 - **Zero-buffering SSE**: `res.flushHeaders()` and `res.write()` ensure tokens stream immediately; only complete SSE blocks are forwarded, so a network chunk boundary never splits JSON
 - **Disconnect cleanup**: `req.on("close")`, `req.on("error")` immediately destroy upstream streams
-- **Proxy timeout**: 300 seconds (5 minutes) for heavy prompt evaluations
+- **Header wait**: 300 seconds (5 minutes) — bounds only the wait for response headers, never the streamed body. A silent body is cut after 120s of byte silence and the turn is re-fired once on a sibling relay
 
 ### Relay failover across the stream lifecycle
 

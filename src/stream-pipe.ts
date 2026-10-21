@@ -27,6 +27,17 @@ import { repairToolArguments } from "./tool-args.ts";
  */
 export const SUBSTANTIAL_MIN_CHUNKS = 50;
 export const SUBSTANTIAL_MIN_BYTES = 100 * 1024;
+// Body-stall cut for streamed upstream bodies (see pipeUpstreamStream).
+// Generous: every healthy stream observed on this proxy re-arms it within a
+// few hundred ms; a 120s byte-silence on an open socket is a wedged relay
+// leg, not a building model.
+let bodyStallCutMs = 120_000;
+/** Test-only: override the body-stall cut; returns a restore function. */
+export function _setBodyStallCutForTest(ms: number): () => void {
+ const prev = bodyStallCutMs;
+ bodyStallCutMs = ms;
+ return () => { bodyStallCutMs = prev; };
+}
 // Bounded lookahead for a streaming response whose upstream omitted the
 // content-type: the pipe holds at most this many bytes while it waits for SSE
 // evidence, then classifies the body itself (raw passthrough on overflow —
@@ -993,6 +1004,46 @@ export function pipeUpstreamStream(
  // One-shot resume guard: the refire hook below fires at most once per turn.
  let refireUsed = false;
 
+ // Body-stall watchdog: after response headers a streaming body has no fixed
+ // total deadline (See relay.ts: the per-attempt timer is headers-only).
+ // The only failure left is a wedged leg that keeps the socket open
+ // and sends nothing — protected by a per-stream idle cut well above every
+ // observed healthy inter-chunk gap (thinking-heavy streams emit sub-second,
+ // even the slowest logged TTFB is tens of seconds). On expiry the CURRENT
+ // stream is destroyed with a relay-fault error so the truncation path
+ // (health mark + one mid-stream refire) owns the turn. Every forwarded byte
+ // re-arms it; end/close/error disarm it; a rescue re-arms the replacement.
+ let stallCutTimer: NodeJS.Timeout | undefined;
+ let stallCutStream: Readable | null = null;
+ const fireStallCut = (target: Readable): void => {
+  stallCutTimer = undefined;
+  stallCutStream = null;
+  if (target.destroyed || clientAborted || target !== nodeStream) return;
+  const stallErr = new Error(
+   `upstream body idle (no data for ${bodyStallCutMs}ms)`,
+  ) as Error & { code?: string };
+  stallErr.code = "FF_BODY_STALL";
+  stallErr.name = "TimeoutError";
+  target.destroy(stallErr);
+ };
+ const scheduleStallCut = (s: Readable): void => {
+  clearTimeout(stallCutTimer);
+  stallCutStream = s;
+  const timer = setTimeout(() => fireStallCut(s), bodyStallCutMs);
+  timer.unref?.();
+  stallCutTimer = timer;
+ };
+ const breatheStallCut = (): void => {
+  if (stallCutTimer !== undefined && stallCutStream === nodeStream) {
+   scheduleStallCut(nodeStream);
+  }
+ };
+ const disarmStallCut = (): void => {
+  clearTimeout(stallCutTimer);
+  stallCutTimer = undefined;
+  stallCutStream = null;
+ };
+
  const sniffThinking = (chunk: Buffer | string): boolean => {
   const s =
    typeof chunk === "string"
@@ -1287,6 +1338,7 @@ export function pipeUpstreamStream(
   sseDecoder = new StringDecoder("utf8");
   terminalScanCarry = Buffer.alloc(0);
   watch(next);
+  scheduleStallCut(next);
   log("debug", "mid-stream refire: continuing turn on replacement stream", { totalChunks, totalBytes }, rid);
   return true;
  };
@@ -1341,6 +1393,7 @@ export function pipeUpstreamStream(
  };
  const onData = (chunk: Buffer | string): void => {
   try {
+   breatheStallCut();
    // While a replacement stream is being fetched the cut stream is stale:
    // its late frames must not interleave with the rescued turn.
    if (refirePending) return;
@@ -1386,6 +1439,7 @@ export function pipeUpstreamStream(
  };
 
  const onError = async (e: unknown): Promise<void> => {
+  disarmStallCut();
   // A rescue is already in flight (its outcome decides the turn): a late
   // error from the cut stream must not inject a terminal mid-rescue.
   if (refirePending) return;
@@ -1437,6 +1491,7 @@ export function pipeUpstreamStream(
  };
 
  const onEnd = async (): Promise<void> => {
+  disarmStallCut();
   // A rescue is in flight (its outcome owns the turn): the cut stream's FIN
   // must neither inject a terminal nor end res mid-rescue.
   if (refirePending) return;
@@ -1542,6 +1597,7 @@ export function pipeUpstreamStream(
  };
 
  const onClose = async (): Promise<void> => {
+  disarmStallCut();
   // A stalled `close` trailing an `end` that is mid-rescue must neither
   // inject a terminal nor end res — the replacement stream owns the turn now.
   if (refirePending) return;
@@ -1603,6 +1659,7 @@ export function pipeUpstreamStream(
   s.on("close", () => { if (s === nodeStream) void onClose(); });
  };
  watch(nodeStream);
+ scheduleStallCut(nodeStream);
 
  req.on("aborted", () => {
   clientAborted = true;

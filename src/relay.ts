@@ -31,8 +31,8 @@ const ROLL_NOTIFY_MS = 5 * 60 * 1_000;
  * per attempt. Relay leg only - the direct-to-upstream
  * fallback keeps the built-in global dispatcher. headersTimeout
  * reaps wedged tunnels, bodyTimeout 0 disables per-chunk kill
- * (the 300s total backstop still bounds a turn), connections 50
- * caps burst spray.
+ * (bodies stream unbounded — a wedged leg is cut by stream-pipe's
+ * body-stall watchdog instead), connections 50 caps burst spray.
  *
  * Compat: an npm undici Agent is rejected as a `dispatcher`
  * by an older-major global fetch bundled in Node
@@ -75,6 +75,18 @@ export function _setHedgeGraceForTest(ms: number): () => void {
 }
 /** Test-only: reset roll-notify throttle */
 export function _resetRollNotifyForTest(): void { lastRollNotify = 0; }
+/********************************************************
+ * Relay attempt header-wait deadline (config default).
+ * Bounded only to the header wait; the streaming body must never be
+ * killed by a fixed wall-clock ceiling (see buildAttempt).
+ ********************************************************/
+let attemptHeaderTimeoutMs = UPSTREAM_HEADER_TIMEOUT_MS;
+/** Test-only: override the relay attempt header deadline; returns a restore function. */
+export function _setAttemptHeaderTimeoutForTest(ms: number): () => void {
+	const prev = attemptHeaderTimeoutMs;
+	attemptHeaderTimeoutMs = ms;
+	return () => { attemptHeaderTimeoutMs = prev; };
+}
 
 /**
  * Determine if an HTTP status code indicates a temporary relay or upstream error
@@ -263,12 +275,28 @@ export async function relayFetch(
 				// window, combined with the caller's signal so either can fire.
 				// A hung relay then trips only its own timeout (roll) instead of
 				// vetoing the pool; a genuine client cancel (caller signal
-				// aborted) still propagates to both hedged attempts.
-				const attemptTimeout = AbortSignal.timeout(UPSTREAM_HEADER_TIMEOUT_MS);
+				// aborted) still propagates to both hedged attempts. The timer
+				// is disarmed the moment the fetch settles: the deadline bounds
+				// the header WAIT only, never the streaming body (an
+				// AbortSignal.timeout would keep hanging over the body and kill
+				// a healthy turn past five minutes mid-generation).
+				const headerDeadlineCtl = new AbortController();
+				let headerTimer: NodeJS.Timeout | undefined;
+				let headerDeadlineDisarmed = false;
+				const disarmHeaderTimeout = (): void => {
+					if (headerDeadlineDisarmed) return;
+					headerDeadlineDisarmed = true;
+					clearTimeout(headerTimer);
+					headerTimer = undefined;
+				};
+				headerTimer = setTimeout(() => {
+					disarmHeaderTimeout();
+					headerDeadlineCtl.abort();
+				}, attemptHeaderTimeoutMs);
 				const attemptSignal = opts.signal
-					? AbortSignal.any([opts.signal, attemptTimeout, hedgeCtl.signal])
-					: AbortSignal.any([attemptTimeout, hedgeCtl.signal]);
-				return { headers: attemptHeaders, signal: attemptSignal };
+					? AbortSignal.any([opts.signal, headerDeadlineCtl.signal, hedgeCtl.signal])
+					: AbortSignal.any([headerDeadlineCtl.signal, hedgeCtl.signal]);
+				return { headers: attemptHeaders, signal: attemptSignal, disarmHeaderTimeout };
 			};
 
 			// Hedged failover: an attempt with no response headers within
@@ -289,14 +317,26 @@ export async function relayFetch(
 			if (!canHedge) {
 				const soloCtl = new AbortController();
 				const solo = buildAttempt(targetUrl, soloCtl);
-				res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
+				try {
+					res = await fetch(targetUrl, { ...opts, headers: solo.headers, signal: solo.signal, ...relayLegInit() } as unknown as RequestInit);
+				} finally {
+					solo.disarmHeaderTimeout();
+				}
 			} else {
 				const primaryUrl = targetUrl;
 				const nextUrl = candidates[i + 1];
 				const nextCheck = validateRelayUrl(nextUrl);
 				const hedgeCtlA = new AbortController();
 				const first = buildAttempt(primaryUrl, hedgeCtlA);
-				const fetchA = fetch(primaryUrl, { ...opts, headers: first.headers, signal: first.signal, ...relayLegInit() } as unknown as RequestInit);
+				// Disarm a settled leg's header deadline: once the fetch resolves
+				// with headers (or rejects) the attempt's abort window is closed,
+				// so a streaming body is never killed past the fixed ceiling.
+				// Wrapping here covers both the staged promise reader and the
+				// hedge race below.
+				const fetchA = fetch(primaryUrl, { ...opts, headers: first.headers, signal: first.signal, ...relayLegInit() } as unknown as RequestInit).then(
+					(r: Response) => { first.disarmHeaderTimeout(); return r; },
+					(e: unknown) => { first.disarmHeaderTimeout(); throw e; },
+				);
 				const stalled = await new Promise<boolean>((resolve) => {
 					const graceTimer = setTimeout(() => resolve(true), HEDGE_GRACE_MS);
 					fetchA.then(
@@ -311,7 +351,10 @@ export async function relayFetch(
 					const hedgeCtlB = new AbortController();
 					const second = buildAttempt(nextUrl, hedgeCtlB);
 					const hedgeStart = Date.now();
-					const fetchB = fetch(nextUrl, { ...opts, headers: second.headers, signal: second.signal, ...relayLegInit() } as unknown as RequestInit);
+					const fetchB = fetch(nextUrl, { ...opts, headers: second.headers, signal: second.signal, ...relayLegInit() } as unknown as RequestInit).then(
+						(r: Response) => { second.disarmHeaderTimeout(); return r; },
+						(e: unknown) => { second.disarmHeaderTimeout(); throw e; },
+					);
 					// Swallow the loser path so the deliberate abort never
 					// surfaces as an unhandled rejection or a direct fallback.
 					fetchA.catch(() => {});
@@ -671,7 +714,7 @@ export async function relayFetch(
 			rateLimitOnly = false;
 			const errMsg =
 				(err as Error)?.name === "AbortError"
-					? `relay header timeout (${Math.round(UPSTREAM_HEADER_TIMEOUT_MS / 1000)}s exceeded)`
+					? `relay header timeout (${Math.round(attemptHeaderTimeoutMs / 1000)}s exceeded)`
 					: (err as Error)?.message || String(err);
 			markRelayFailure(targetUrl, 0, errMsg);
 			log(

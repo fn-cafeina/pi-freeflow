@@ -290,37 +290,99 @@ export interface StreamCloakOptions {
 export interface SseStreamCloakState {
  responsesDroppedByIndex: Map<number, boolean>;
  responsesDroppedByItemId: Map<string, boolean>;
- chatDroppedByIndex: Map<number, boolean>;
  messagesDroppedByIndex: Map<number, boolean>;
  /** Output index -> tool name, so nameless argument deltas can find their schema. */
  responsesNameByIndex: Map<number, string>;
  /** Anthropic block index -> tool name, same purpose for input_json deltas. */
  messagesNameByIndex: Map<number, string>;
- /** Chat tool-call index -> restored tool name. */
- chatNameByIndex: Map<number, string>;
  /**
- * Argument fragments for tool calls whose schema admits a repair, keyed the
- * same way as the name maps above. Streaming APIs deliver arguments in
- * fragments, so a malformed packet can only be judged once complete: those
- * fragments are held here and re-emitted, repaired, on the call's terminal
- * event. Tools absent from `argSchemas` are never buffered, so their
- * arguments still stream incrementally exactly as before.
+ * Argument fragments for Anthropic tool_use blocks whose schema admits a
+ * repair, keyed the same way as the name map above. Streaming APIs deliver
+ * arguments in fragments, so a malformed packet can only be judged once
+ * complete: those fragments are held here and re-emitted, repaired, on the
+ * block's terminal event. Tools absent from `argSchemas` are never buffered,
+ * so their arguments still stream incrementally exactly as before.
  */
- chatArgsByIndex: Map<number, string>;
  messagesArgsByIndex: Map<number, string>;
+ /**
+ * Chat tool calls tracked PER CALL (defect K1): keyed by the upstream
+ * tool-call id whenever the provider sends one (`id:X`), else by the legacy
+ * index bucket (`idx:N`). Free models label EVERY parallel call `index: 0`
+ * while still sending per-call ids, so index-only keying merged their
+ * fragment streams: one call was silently lost and the other received a
+ * salvage of the merged junk. Drops, names, buffered arguments and the
+ * once-only flush guard are per call; an injected placeholder's drop
+ * verdict is never inherited by a real call that reuses its index.
+ */
+ chatCalls: Map<string, ChatTrackedCall>;
+ /**
+ * Observed delta index -> key of the call its id-less fragments currently
+ * belong to. Resolution mirrors the aggregate cloak exactly
+ * (sseToChatCompletionJson): an id-bearing delta (re)binds the index to its
+ * id-call; id-less deltas follow the current owner, else the legacy
+ * `idx:N` bucket. Never consulted for host-visible indices — that is what
+ * {@link chatIndexClaims} is for.
+ */
+ chatIndexOwner: Map<number, string>;
+ /** Host-index claims: index -> key of the call that FIRST assigned it. Set once, never rebound. */
+ chatIndexClaims: Map<number, string>;
+ /**
+ * Fresh sequential index handed out when a call's upstream index is already
+ * claimed by another tracked call; strictly above every index seen or
+ * assigned so far in this stream.
+ */
+ chatNextIndex: number;
+}
+
+/**
+ * Streaming state of ONE chat tool call. Exported only because it hangs off
+ * the exported per-stream state; treat it as pipe-internal.
+ */
+export interface ChatTrackedCall {
+ /** Never emit this call: injected placeholder, or a tool-less caller's call. */
+ dropped: boolean;
+ /** Restored host-facing name, set by (the latest) name-bearing delta. */
+ name: string | undefined;
+ /**
+ * True once a name-bearing delta decided this tool is repairable and its
+ * fragments must be withheld: the packet is only judgeable once whole, so
+ * the fragments re-emerge whole+repaired on the call's terminal event.
+ */
+ buffered: boolean;
+ /** Buffered argument prefix while {@link buffered} is true ("" until a fragment arrives). */
+ args: string;
+ /**
+ * Host-visible index: the call's FIRST assigned index — its first observed
+ * index — unless that upstream index was claimed by another tracked call,
+ * in which case a fresh sequential index was handed out in arrival order.
+ */
+ hostIndex: number;
+ /** Emitted-once guard: a flush entry already went out for this call (terminal or end-of-stream). */
+ flushed: boolean;
+}
+
+/** Map key of a chat tool call that announced an upstream id. */
+function chatCallIdKey(id: string): string {
+ return `id:${id}`;
+}
+
+/** Legacy map key of the id-less fragment bucket for one observed delta index. */
+function chatIndexKey(idx: number): string {
+ return `idx:${idx}`;
 }
 
 export function createSseStreamCloakState(): SseStreamCloakState {
  return {
   responsesDroppedByIndex: new Map(),
   responsesDroppedByItemId: new Map(),
-  chatDroppedByIndex: new Map(),
   messagesDroppedByIndex: new Map(),
   responsesNameByIndex: new Map(),
   messagesNameByIndex: new Map(),
-  chatNameByIndex: new Map(),
-  chatArgsByIndex: new Map(),
   messagesArgsByIndex: new Map(),
+  chatCalls: new Map(),
+  chatIndexOwner: new Map(),
+  chatIndexClaims: new Map(),
+  chatNextIndex: 0,
  };
 }
 
@@ -357,15 +419,19 @@ export function flushBufferedToolArgs(
   state.messagesNameByIndex.clear();
   return blocks.join("");
  }
- if (state.chatArgsByIndex.size === 0) return null;
  const calls: unknown[] = [];
- for (const [index, args] of state.chatArgsByIndex) {
-  const name = state.chatNameByIndex.get(index);
+ for (const call of state.chatCalls.values()) {
+  // The flushed guard makes this one-shot even when a terminal flush
+  // already emitted the call whole earlier in the stream.
+  if (!call.buffered || call.flushed) continue;
+  const name = call.name;
   if (name === undefined) continue;
-  calls.push({ index, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } });
+  const args = call.args;
+  call.flushed = true;
+  call.buffered = false;
+  call.args = "";
+  calls.push({ index: call.hostIndex, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } });
  }
- state.chatArgsByIndex.clear();
- state.chatNameByIndex.clear();
  if (calls.length === 0) return null;
  return `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: calls } }] })}\n\n`;
 }
@@ -547,47 +613,134 @@ function cloakStreamResponsesObject(resp: unknown, cloak: StreamCloakOptions): v
 }
 
 /**
+ * Resolve ONE chat tool_calls record to its tracked call, registering the
+ * call on first sight.
+ *
+ * Keying mirrors the aggregate cloak (sseToChatCompletionJson): a record with
+ * a non-empty id is keyed `id:<id>`; an id-less record joins whatever call
+ * currently OWNS its index (`chatIndexOwner`, which id-bearing deltas
+ * rebind), else the legacy `idx:<index>` bucket — so id-less parallel calls
+ * sharing `index: 0` still merge into one fragment stream, exactly as
+ * before. Host index = the call's first observed index unless that upstream
+ * index is ALREADY CLAIMED by another tracked call (`chatIndexClaims`), in
+ * which case the next fresh sequential index is handed out in arrival order.
+ * The claim deliberately counts dropped calls too: the ticket rule is
+ * "claimed by ANOTHER tracked call", and a dropped placeholder has already
+ * moved the claim bookkeeping even though it emits nothing.
+ */
+function chatTrackedCall(
+ state: SseStreamCloakState,
+ rec: Record<string, unknown>,
+): { call: ChatTrackedCall; key: string; idx: number } {
+ const idx = typeof rec.index === "number" ? rec.index : 0;
+ if (idx + 1 > state.chatNextIndex) state.chatNextIndex = idx + 1;
+ const id = typeof rec.id === "string" && rec.id !== "" ? rec.id : undefined;
+ let key: string;
+ if (id !== undefined) {
+  key = chatCallIdKey(id);
+  // Id-bearing deltas (re)bind the index owner; later id-less fragments
+  // follow, and a real call reusing an injected placeholder's index takes
+  // the connection over instead of inheriting its drop verdict.
+  state.chatIndexOwner.set(idx, key);
+ } else {
+  key = state.chatIndexOwner.get(idx) ?? chatIndexKey(idx);
+ }
+ const known = state.chatCalls.get(key);
+ if (known !== undefined) return { call: known, key, idx };
+ // First sight: assign the host-visible index. A claimed upstream index
+ // forces a fresh sequential index above every index seen or assigned so
+ // far; the fresh index is itself claimed so a later real call keeps clear.
+ const claim = state.chatIndexClaims.get(idx);
+ let call: ChatTrackedCall;
+ if (claim === undefined) {
+  state.chatIndexClaims.set(idx, key);
+  call = { dropped: false, name: undefined, buffered: false, args: "", hostIndex: idx, flushed: false };
+ } else {
+  call = { dropped: false, name: undefined, buffered: false, args: "", hostIndex: state.chatNextIndex++, flushed: false };
+  state.chatIndexClaims.set(call.hostIndex, key);
+ }
+ state.chatCalls.set(key, call);
+ return { call, key, idx };
+}
+
+/**
+ * Point one EMITTED chat tool_call delta at its call's host index. The
+ * rewrite must only ever fire in index-collision cases, so byte-identity
+ * holds for every single-call stream: an unchanged index is left untouched,
+ * and a record with NO index field (host-defaulted 0) only gains one when
+ * the host index is not 0.
+ */
+function chatRewriteDeltaIndex(rec: Record<string, unknown>, call: ChatTrackedCall): boolean {
+ if (typeof rec.index === "number") {
+  if (rec.index === call.hostIndex) return false;
+  rec.index = call.hostIndex;
+  return true;
+ }
+ if (call.hostIndex === 0) return false;
+ rec.index = call.hostIndex;
+ return true;
+}
+
+/**
  * Terminal chunk for chat choice: absorb any tool-call argument fragment
- * riding the finish_reason chunk into the buffered prefix, then re-emit every
- * buffered tool call's whole argument packet, repaired.
- * Returns true if delta was mutated.
+ * riding the finish_reason chunk into its call's buffered prefix, then
+ * re-emit every buffered call's whole argument packet, repaired, at ITS host
+ * index. Returns true if delta was mutated.
+ *
+ * Flush-entry id policy: entries keep today's exact shape
+ * {index, type:"function", function:{name,arguments}} WITHOUT the call id.
+ * Hosts assemble streamed tool_calls by index, and every delta of the call —
+ * including the id-bearing name-delta — is emitted at the same rewritten
+ * host index, so the host has already bound the id; the stable shape also
+ * keeps the single-call flush byte-identical.
  */
 function flushChatTerminalToolCalls(
  d: Record<string, unknown>,
  state: SseStreamCloakState,
  cloak: StreamCloakOptions,
- flushedIndices: Set<number>,
+ flushedKeys: Set<string>,
+ flushedEntries: Set<Record<string, unknown>>,
 ): boolean {
- if (state.chatArgsByIndex.size === 0) return false;
+ let rewrote = false;
 
  for (const tc of Array.isArray(d.tool_calls) ? d.tool_calls : []) {
   if (!tc || typeof tc !== "object" || Array.isArray(tc)) continue;
   const rec = tc as Record<string, unknown>;
-  const idx = typeof rec.index === "number" ? rec.index : 0;
+  const { call } = chatTrackedCall(state, rec);
   const fn = rec.function;
   const fnRec = fn && typeof fn === "object" && !Array.isArray(fn) ? (fn as Record<string, unknown>) : null;
-  if (fnRec && state.chatArgsByIndex.has(idx) && typeof fnRec.arguments === "string") {
-   state.chatArgsByIndex.set(idx, (state.chatArgsByIndex.get(idx) ?? "") + fnRec.arguments);
+  if (call.buffered && !call.flushed && fnRec && typeof fnRec.arguments === "string") {
+   call.args += fnRec.arguments;
   }
  }
 
  const flushed: unknown[] = [];
- for (const [idx, args] of state.chatArgsByIndex) {
-  const name = state.chatNameByIndex.get(idx);
+ for (const [key, call] of state.chatCalls) {
+  if (!call.buffered || call.flushed) continue;
+  const name = call.name;
   if (name === undefined) continue;
-  flushedIndices.add(idx);
-  flushed.push({ index: idx, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } });
+  call.flushed = true;
+  call.buffered = false;
+  const args = call.args;
+  call.args = "";
+  flushedKeys.add(key);
+  const entry = { index: call.hostIndex, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } };
+  flushedEntries.add(entry);
+  flushed.push(entry);
  }
- state.chatArgsByIndex.clear();
- state.chatNameByIndex.clear();
 
- if (flushed.length === 0) return false;
+ if (flushed.length === 0 && !rewrote) return false;
 
+ // Records riding the finish chunk whose call was just flushed are removed
+ // (their fragments were absorbed above); surviving records keep flowing but
+ // are first pointed at their call's host index.
  const remaining = (Array.isArray(d.tool_calls) ? d.tool_calls : []).filter((tc) => {
   if (!tc || typeof tc !== "object" || Array.isArray(tc)) return true;
   const rec = tc as Record<string, unknown>;
-  const idx = typeof rec.index === "number" ? rec.index : 0;
-  return !flushedIndices.has(idx);
+  const { call, key } = chatTrackedCall(state, rec);
+  if (flushedKeys.has(key)) return false;
+  if (chatRewriteDeltaIndex(rec, call)) rewrote = true;
+  return true;
  });
  d.tool_calls = [...remaining, ...flushed];
  return true;
@@ -595,9 +748,12 @@ function flushChatTerminalToolCalls(
 
 /**
  * Rewrite one Chat Completions SSE block: drop injected delta.tool_calls
- * (including nameless argument continuations via per-index tracking), restore
- * surviving names. Tool-less callers lose all tool_calls with arguments
- * folded to content, mirroring the aggregate cloak. Null drops the block.
+ * (including nameless continuations via per-call tracking), restore surviving
+ * names, and keep host-visible indices true: collisions on one upstream
+ * index (free models label every parallel call index 0) are rewritten to
+ * distinct sequential indices while the call stays one call.
+ * Tool-less callers lose all tool_calls with arguments folded to content,
+ * mirroring the aggregate cloak. Null drops the block.
  */
 function rewriteChatBlock(
  block: string,
@@ -634,13 +790,14 @@ function rewriteChatBlock(
   }
   const d = delta as Record<string, unknown>;
   // Terminal chunk for this choice: re-emit every buffered tool call's whole
-  // argument packet, repaired. The fragments never went out, so this is the
-  // first and only time the client sees them. Runs before the tool_calls
-  // branch because the terminal chunk usually carries an empty delta.
-  // Indices flushed on this block: their arguments are final, so the
-  // per-delta loop below must not buffer them a second time.
-  const flushedIndices = new Set<number>();
-  if (c.finish_reason && flushChatTerminalToolCalls(d, state, cloak, flushedIndices)) {
+  // argument packet, repaired, at its host index. The fragments never went
+  // out, so this is the first and only time the client sees them. Runs
+  // before the tool_calls branch because the terminal chunk usually carries
+  // an empty delta. Call keys flushed on this block: their arguments are
+  // final, so the per-delta loop below must not buffer them a second time.
+  const flushedKeys = new Set<string>();
+  const flushedEntries = new Set<Record<string, unknown>>();
+  if (c.finish_reason && flushChatTerminalToolCalls(d, state, cloak, flushedKeys, flushedEntries)) {
    changed = true;
   }
   if (!Array.isArray(d.tool_calls)) {
@@ -651,13 +808,21 @@ function rewriteChatBlock(
   let folded = "";
   for (const tc of d.tool_calls as unknown[]) {
    if (!tc || typeof tc !== "object" || Array.isArray(tc)) continue;
+   // Flush entry rebuilt by the terminal flush above: pure passthrough.
+   // These carry no id, so key resolution would misbind them to whichever
+   // call currently owns the index — today's code skipped them the same way
+   // via the index-keyed flushedIndices set.
+   if (flushedEntries.has(tc as Record<string, unknown>)) {
+    kept.push(tc);
+    continue;
+   }
    const rec = tc as Record<string, unknown>;
-   const idx = typeof rec.index === "number" ? rec.index : 0;
+   const { call, key } = chatTrackedCall(state, rec);
    const fn = rec.function;
    const fnRec = fn && typeof fn === "object" && !Array.isArray(fn) ? (fn as Record<string, unknown>) : null;
    const name = fnRec && typeof fnRec.name === "string" && fnRec.name !== "" ? (fnRec.name as string) : "";
    if (!cloak.callerHadTools) {
-    state.chatDroppedByIndex.set(idx, true);
+    call.dropped = true;
     if (fnRec) {
      folded += (typeof fnRec.arguments === "string" && fnRec.arguments) || name;
     }
@@ -666,7 +831,10 @@ function rewriteChatBlock(
    }
    if (name !== "") {
     if (isInjectedName(name, cloak.injected)) {
-     state.chatDroppedByIndex.set(idx, true);
+     // The verdict is the CALL's, not the index's: a real id-bearing call
+     // reusing this index rebinds the fragment owner (chatIndexOwner) and
+     // inherits nothing.
+     call.dropped = true;
      changed = true;
      continue;
     }
@@ -675,35 +843,40 @@ function rewriteChatBlock(
      fnRec.name = restored;
      changed = true;
     }
-    state.chatDroppedByIndex.delete(idx);
-    state.chatNameByIndex.set(idx, restored);
-    if (isRepairableTool(restored, cloak.argSchemas) && !flushedIndices.has(idx)) {
+    call.dropped = false;
+    call.name = restored;
+    if (isRepairableTool(restored, cloak.argSchemas) && !call.flushed && !flushedKeys.has(key)) {
      // Hold this call's arguments: the packet is only judgeable once whole,
      // so it is re-emitted repaired on the terminal finish_reason chunk.
-     state.chatArgsByIndex.set(idx, "");
+     // Reset-then-absorb mirrors the old per-index buffer exactly.
+     call.buffered = true;
+     call.args = "";
      if (fnRec && typeof fnRec.arguments === "string" && fnRec.arguments !== "") {
-      state.chatArgsByIndex.set(idx, fnRec.arguments);
+      call.args = fnRec.arguments;
       delete fnRec.arguments;
       changed = true;
      }
      kept.push(tc);
+     if (chatRewriteDeltaIndex(rec, call)) changed = true;
      continue;
     }
     kept.push(tc);
+    if (chatRewriteDeltaIndex(rec, call)) changed = true;
     continue;
    }
-   // Nameless continuation (argument chunk): follows the index verdict.
-   if (state.chatDroppedByIndex.get(idx) === true) {
+   // Nameless continuation (argument chunk): follows the CALL's verdict.
+   if (call.dropped) {
     changed = true;
     continue;
    }
-  if (state.chatArgsByIndex.has(idx) && fnRec && typeof fnRec.arguments === "string") {
-   state.chatArgsByIndex.set(idx, (state.chatArgsByIndex.get(idx) ?? "") + fnRec.arguments);
+  if (call.buffered && fnRec && typeof fnRec.arguments === "string") {
+   call.args += fnRec.arguments;
    delete fnRec.arguments;
    changed = true;
    continue;
   }
   kept.push(tc);
+  if (chatRewriteDeltaIndex(rec, call)) changed = true;
  }
   if (kept.length > 0) {
    d.tool_calls = kept;

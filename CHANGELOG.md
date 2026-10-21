@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.40.1
+
+### Patch Changes
+
+- Long streams are no longer cut at the five-minute ceiling mid-turn; a stalled relay is cut and re-fired instead.
+  
+  Relay attempts carried a single deadline for the whole request. When a heavy reasoning turn ran past five minutes — big-pickle and long deepseek sessions routinely do — the deadline fired on live bytes, the proxy saw the dead stream as an upstream truncation, and silently re-fired the turn on another relay: on the screen the answer suddenly stopped and then continued as a fresh full generation, with the earlier partial content above it. The deadline now bounds only the header wait and is released the moment headers arrive, so a streaming body lives as long as bytes keep flowing — exactly like the other proxy paths that already cleared their timer on headers.
+  
+  A body that stops flowing entirely is cut by a per-turn idle watchdog (120s of byte silence on a live socket is a wedged tunnel, not a thinking pause) and follows the existing one-refire truncation path, so a hung relay leg still hands the turn to a sibling instead of stalling until the host gives up.
+
 ## 1.40.0
 
 ### Minor Changes

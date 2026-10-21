@@ -145,7 +145,6 @@ test("enforce: partial OMP [ask,glob] on /v1/responses yields real schemas, edit
  assert.equal(r.callerHadTools, true);
  assert.equal(r.addedTools, true);
  assert.deepEqual(r.injected, ["edit"], "only the non-executable edit placeholder is cloaked");
- assert.deepEqual([...r.injectedReal].sort(), ["bash", "grep", "read", "write"]);
  const tools = body.tools as Array<Record<string, unknown>>;
  assert.equal(tools.length, 7);
  for (const t of tools) {
@@ -191,7 +190,7 @@ test("enforce: model calling injected read executes downstream (not cloaked)", (
  );
 });
 
-test("enforce: full OMP inventory yields injected=[] and injectedReal=[]", () => {
+test("enforce: full OMP inventory yields injected=[]", () => {
  const body: Record<string, unknown> = {
   model: "nemotron-3.5-super-vl-free",
   input: "hi",
@@ -209,7 +208,6 @@ test("enforce: full OMP inventory yields injected=[] and injectedReal=[]", () =>
  };
  const r = enforceOpencodeFingerprint(body, "/v1/responses");
  assert.deepEqual(r.injected, []);
- assert.deepEqual(r.injectedReal, []);
  assert.equal(r.addedTools, false);
  assert.equal((body.tools as unknown[]).length, 8);
 });
@@ -222,7 +220,6 @@ test("enforce: Pi find caller keeps empty placeholders and full cloak list", () 
   tools: [responsesTool("find", "Find files", findParams)],
  };
  const r = enforceOpencodeFingerprint(body, "/v1/responses");
- assert.deepEqual(r.injectedReal, [], "Pi serves no real definitions");
  assert.ok(r.injected.includes("bash") && r.injected.includes("read"), "Pi placeholders still cloaked");
  assert.ok(!r.injected.includes("glob"), "renamed find satisfies the glob slot");
  const tools = body.tools as Array<Record<string, unknown>>;

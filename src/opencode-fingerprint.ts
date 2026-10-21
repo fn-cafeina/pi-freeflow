@@ -109,9 +109,9 @@ export function isPlaceholderToolName(name: unknown): boolean {
  * Fill for one missing fingerprint slot: the shared OMP real definition when
  * the caller is OMP-like, otherwise the empty COMPAT placeholder Pi keeps.
  * `edit` is always COMPAT, even for OMP-like callers: no single static edit
- * schema executes on either host (OMP is edit-mode dependent, Pi wants
- * edits[]), so it must stay in the cloaked `injected` list, never
- * `injectedReal`. Single lockstep source for the three wire-shape ensure
+ * executes on either host (OMP is edit-mode dependent, Pi wants
+ * edits[]), so it must stay in the cloaked `injected` list even when the
+ * caller would otherwise receive real definitions. Single lockstep source for the three wire-shape ensure
  * functions below.
  */
 function fingerprintFill(name: FingerprintToolName, omp: boolean): { description: string; schema: Record<string, unknown> } {
@@ -368,6 +368,30 @@ function restoreNativeEffortAfterChoiceDrop(body: Record<string, unknown>): void
  * Highest non-null level a model's declared map supports, or null when the
  * model declares no map or only supports `off` (nothing to fall back to).
  */
+/**
+ * Chat-lane mirror of the responses effort clamp (normalizeResponsesBody):
+ * a host targeting the chat path spells the effort flat — `reasoning_effort`
+ * or `reasoningEffort` — and the same clampedEffortFor algorithm applies.
+ * A level the model's map declares unsupported is clamped to the highest
+ * supported one; a supported level or a key the map does not know is left
+ * for upstream to rule on; genuine `off` is never rewritten. The Zen
+ * messages lane carries no flat effort spelling, so it is not touched.
+ */
+function clampChatReasoningEffort(body: Record<string, unknown>): void {
+ const model = body.model;
+ if (typeof model !== "string") return;
+ for (const key of ["reasoning_effort", "reasoningEffort"] as const) {
+  const flat = body[key];
+  if (typeof flat !== "string") continue;
+  const clamped = clampedEffortFor(model, flat);
+  if (clamped !== null) body[key] = clamped;
+ }
+}
+
+/**
+ * Highest non-null level a model's declared map supports, or null when the
+ * model declares no map or only supports `off` (nothing to fall back to).
+ */
 function highestSupportedEffort(model: string): string | null {
  const map = getModelDef(model)?.thinkingLevelMap;
  if (!map) return null;
@@ -477,10 +501,11 @@ export function normalizeResponsesBody(body: Record<string, unknown>): void {
  * no-ops for Pi. `edit` is always the cloaked placeholder (no static edit
  * schema executes on either host). Returns the original stream flag,
  * caller-tools flag, whether injection added tools, and the bounded
- * per-request restore records (caseRestore, findGlob, injected, injectedReal)
- * for downstream cloaking. Cloaking strips by `injected` only: names in
- * `injectedReal` were served with executable definitions, so model calls to
- * them execute downstream instead of being cloaked.
+ * per-request restore records (caseRestore, findGlob, injected)
+ * for downstream cloaking. Cloaking strips by `injected` only: any missing
+ * slot the caller received with an executable definition is not a
+ * placeholder, so model calls to it execute downstream instead of being
+ * cloaked.
  *
  * `argSchemas` (lowercased caller tool name -> declared parameters) lets
  * downstream repair malformed arguments against the caller's own schema; it
@@ -497,7 +522,6 @@ export function enforceOpencodeFingerprint(
  caseRestore: CaseRestoreMap;
  findGlob: FindGlobRestore;
  injected: string[];
- injectedReal: string[];
  argSchemas: Map<string, Record<string, unknown>>;
 } {
  const clientRequestedStream = body.stream === true;
@@ -505,10 +529,12 @@ export function enforceOpencodeFingerprint(
  // Zen responses shape conformance first (Chat leftovers, tool_choice, spark
  // effort clamp, store default): Kilo/Cline bodies never reach here.
  if (pathname.endsWith("/responses")) normalizeResponsesBody(body);
+ else if (pathname.endsWith("/chat/completions")) clampChatReasoningEffort(body);
  // Chat path mirrors the responses drop: Zen free tier accepts only auto, so a
- // caller "none" (string or { type: "none" }) would 400 upstream. Messages
- // path keeps its own choice semantics.
- enforceAutoToolChoice(body);
+ // caller "none" (string or { type: "none" }) would 400 upstream. The Zen
+ // messages lane keeps its own choice semantics: Anthropic names choices with
+ // `any` / `{ type: "tool", name: ... }`, and the drop would delete them.
+ if (!pathname.endsWith("/messages")) enforceAutoToolChoice(body);
  // Upstream Zen free tier mandates stream: true for all free requests
  body.stream = true;
 
@@ -541,7 +567,6 @@ export function enforceOpencodeFingerprint(
  // executable when injected); real definitions survive downstream so
  // injected OMP calls execute.
  const injected = missing.filter((n) => !ompLike || n === "edit");
- const injectedReal = ompLike ? missing.filter((n) => n !== "edit") : [];
 
  // Zen alone asks for a rename: its free-tier gate looks for the sextet name
  // `glob`, so a Pi caller that sent `find` needs it renamed into that slot.
@@ -561,13 +586,15 @@ export function enforceOpencodeFingerprint(
  const after = Array.isArray(body.tools) ? body.tools.length : 0;
 
  // Note: Upstream OpenCode Zen explicitly rejects any tool_choice other than "auto"
- // with HTTP 400 (only "auto" is supported). tool_choice is auto-or-absent here:
- // normalizeResponsesBody drops "none" on the responses path, the chat branch above
- // drops it on the chat path, and we never impose a choice.
+ // with HTTP 400 (only "auto" is supported). tool_choice is auto-or-absent on the
+ // responses and chat paths (normalizeResponsesBody / enforceAutoToolChoice above),
+ // the Zen messages lane keeps the caller's own choice semantics (Anthropic
+ // spells choices with `any` / `{ type: "tool", name: ... }`), and we never
+ // impose a choice.
  // Empty-placeholder callers stay silent via the COMPAT description and the
  // output-aggregator; real OMP definitions execute normally.
 
- return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, injectedReal, argSchemas };
+ return { clientRequestedStream, callerHadTools, addedTools: after > before, caseRestore, findGlob, injected, argSchemas };
 }
 
 /**

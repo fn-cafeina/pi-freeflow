@@ -391,7 +391,14 @@ test("pi usage: custom registerTool envelope keeps unbounded name with constrain
 				`${path}: wire name folded only where upstream would reject it`,
 			);
 			assert.deepEqual(upstreamParamsOf(out), customParams, `${path}: custom params verbatim`);
-			assert.equal((out as Record<string, unknown>).strict, true, `${path}: resolved strict rides along`);
+			// `strict` sits at the target wire position: inside the chat
+			// `function` wrapper, top-level on the other shapes.
+			const fn = out.function as Record<string, unknown> | undefined;
+			assert.deepEqual(
+				fn && typeof fn.strict === "boolean" ? fn.strict : (out as Record<string, unknown>).strict,
+				true,
+				`${path}: resolved strict rides along`,
+			);
 			assert.deepEqual(
 				(out as Record<string, unknown>).constrainedSampling,
 				constrainedSampling,

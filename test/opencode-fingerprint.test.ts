@@ -525,7 +525,7 @@ test("normalizeResponsesBody: every assistant commentary item loses its phase", 
 	assert.equal(twoTurnItems[2].phase, "final_answer", "final_answer is not the rejected shape");
 });
 
-test("tool_choice is auto-or-absent on every Zen path", () => {
+test("tool_choice is auto-or-absent on Zen chat/responses; the messages lane keeps its own semantics", () => {
 	const unsupported = ["none", "required", "any"] as const;
 	for (const value of unsupported) {
 		const body: Record<string, unknown> = { model: "nemotron-3.5-super-vl-free", input: "hi", tool_choice: value };
@@ -560,15 +560,83 @@ test("tool_choice is auto-or-absent on every Zen path", () => {
 	enforceOpencodeFingerprint(chatAuto, "/v1/chat/completions");
 	assert.equal(chatAuto.tool_choice, "auto", "chat auto rides verbatim");
 
-	// The messages path shares the chat branch: Zen accepts only auto there
-	// too, so an unsupported choice is dropped rather than passed through.
-	const messagesPath: Record<string, unknown> = { model: "claude-fable-5", messages: [], tool_choice: "required" };
-	enforceOpencodeFingerprint(messagesPath, "/v1/messages");
-	assert.ok(!("tool_choice" in messagesPath), "messages path drops an unsupported choice too");
+	// The Zen messages lane keeps its own choice semantics: Anthropic names
+	// choices with `any` / `{ type: "tool", name: ... }`, and the chat drop
+	// would delete them. Nothing is rewritten there, byte-identical.
+	const messagesRequired: Record<string, unknown> = { model: "claude-fable-5", messages: [], tool_choice: "required" };
+	enforceOpencodeFingerprint(messagesRequired, "/v1/messages");
+	assert.equal(messagesRequired.tool_choice, "required", "messages keeps an unsupported chat-lane choice untouched");
+
+	const messagesAny: Record<string, unknown> = { model: "claude-fable-5", messages: [], tool_choice: "any" };
+	enforceOpencodeFingerprint(messagesAny, "/v1/messages");
+	assert.equal(messagesAny.tool_choice, "any", "messages keeps the Anthropic any-choice");
+
+	const messagesNamed: Record<string, unknown> = {
+		model: "claude-fable-5",
+		messages: [],
+		tool_choice: { type: "tool", name: "bash" },
+	};
+	enforceOpencodeFingerprint(messagesNamed, "/v1/messages");
+	assert.deepEqual(messagesNamed.tool_choice, { type: "tool", name: "bash" }, "messages keeps a named Anthropic choice");
 
 	const messagesAuto: Record<string, unknown> = { model: "claude-fable-5", messages: [], tool_choice: "auto" };
 	enforceOpencodeFingerprint(messagesAuto, "/v1/messages");
 	assert.equal(messagesAuto.tool_choice, "auto", "messages auto rides verbatim");
+});
+
+test("enforceOpencodeFingerprint: the chat lane clamps a flat reasoning_effort like the responses lane", () => {
+	// cat-jam-free: `minimal` is not an offered rung — the live gateway
+	// enumerates max/xhigh/high/medium/low only (issue #62). The chat lane
+	// must run the same clampedEffortFor algorithm normalizeResponsesBody
+	// runs on the responses lane, so an unsupported flat effort clamps to the
+	// model's highest supported rung instead of 400ing upstream.
+	const clamp: Record<string, unknown> = {
+		model: "cat-jam-free",
+		messages: [],
+		reasoning_effort: "minimal",
+	};
+	enforceOpencodeFingerprint(clamp, "/v1/chat/completions");
+	assert.equal(clamp.reasoning_effort, "max", "unsupported flat effort clamped to the highest supported rung");
+
+	// The camelCase spelling gets the identical treatment.
+	const camel: Record<string, unknown> = {
+		model: "nemotron-3.5-super-vl-free",
+		reasoningEffort: "max",
+	};
+	enforceOpencodeFingerprint(camel, "/v1/chat/completions");
+	assert.equal(camel.reasoningEffort, "xhigh", "unsupported camelCase effort clamped too");
+
+	// A supported rung, a genuine off, and a key the map does not know all
+	// ride byte-identical, matching normalizeResponsesBody semantics.
+	const chosen: Record<string, unknown> = {
+		model: "cat-jam-free",
+		reasoning_effort: "high",
+	};
+	enforceOpencodeFingerprint(chosen, "/v1/chat/completions");
+	assert.equal(chosen.reasoning_effort, "high", "a supported effort is untouched");
+
+	const off: Record<string, unknown> = {
+		model: "cat-jam-free",
+		reasoning_effort: "off",
+	};
+	enforceOpencodeFingerprint(off, "/v1/chat/completions");
+	assert.equal(off.reasoning_effort, "off", "genuine off is never rewritten");
+
+	const unknown: Record<string, unknown> = {
+		model: "cat-jam-free",
+		reasoningEffort: "bogus",
+	};
+	enforceOpencodeFingerprint(unknown, "/v1/chat/completions");
+	assert.equal(unknown.reasoningEffort, "bogus", "unknown keys stay for upstream to rule on");
+
+	// The Zen messages lane carries no flat effort spelling and stays untouched.
+	const messagesLane: Record<string, unknown> = {
+		model: "cat-jam-free",
+		messages: [],
+		reasoning_effort: "bogus",
+	};
+	enforceOpencodeFingerprint(messagesLane, "/v1/messages");
+	assert.equal(messagesLane.reasoning_effort, "bogus", "messages lane keeps its caller value");
 });
 
 test("a replayed tool call with a malformed name is folded on the wire", () => {

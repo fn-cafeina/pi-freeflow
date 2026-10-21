@@ -276,6 +276,30 @@ test("degrade: responses failover bodies drop Zen-bound state and clamp output t
  prepareChatFailoverBody(chat);
  assert.ok(!("prompt_cache_key" in chat));
  assert.equal(chat.max_tokens, KILO_FAILOVER_MAX_OUTPUT_TOKENS);
+
+ // The chat spelling carries both fields on the wire now: the same clamp
+ // algebra applies to `max_completion_tokens` — clamp only when above the
+ // ceiling, leave anything else untouched, and never touch the sibling
+ // spelling the caller did not send.
+ const chatFlat = newChat();
+ chatFlat.prompt_cache_key = "zen-chat-cache";
+ chatFlat.max_completion_tokens = 131_072;
+ prepareChatFailoverBody(chatFlat);
+ assert.ok(!("prompt_cache_key" in chatFlat));
+ assert.equal(chatFlat.max_completion_tokens, KILO_FAILOVER_MAX_OUTPUT_TOKENS);
+ assert.ok(!("max_tokens" in chatFlat), "only the spelling the caller sent is clamped");
+
+ const chatUnder = newChat();
+ chatUnder.max_completion_tokens = 1_024;
+ chatUnder.max_tokens = 1_024;
+ prepareChatFailoverBody(chatUnder);
+ assert.equal(chatUnder.max_completion_tokens, 1_024, "sub-ceiling value untouched");
+ assert.equal(chatUnder.max_tokens, 1_024, "sub-ceiling value untouched");
+
+ const chatAtCeiling = newChat();
+ chatAtCeiling.max_completion_tokens = KILO_FAILOVER_MAX_OUTPUT_TOKENS;
+ prepareChatFailoverBody(chatAtCeiling);
+ assert.equal(chatAtCeiling.max_completion_tokens, KILO_FAILOVER_MAX_OUTPUT_TOKENS, "ceiling-exact value is kept");
 });
 
 test("degrade: non-gate failures never trip the zen gate", () => {

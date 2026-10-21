@@ -25,7 +25,9 @@
  *   `description`/`parameters`/`strict` verbatim plus every other top-level
  *   caller field, except the wire-shape-forbidden keys which are remapped:
  *   chat `function` wrapper <-> flat `name`, `parameters` <-> `input_schema`,
- *   and `type` is set per target shape. Never injects `additionalProperties`.
+ *   and `type` is set per target shape. `strict` rides top-level on the
+ *   Responses/Anthropic shapes and inside the chat `function` wrapper. Never
+ *   injects `additionalProperties`.
  * - Non-function tools (e.g. Responses built-ins like { type: "web_search" })
  *   pass through verbatim.
  * - `parameters` and Anthropic `input_schema` are treated as the same schema.
@@ -278,8 +280,9 @@ function schemaOf(t: Record<string, unknown>, fn: Record<string, unknown> | null
 /**
  * Normalize one wire tool to canonical form. Returns null for entries that
  * are not function tools (they must pass through verbatim, not be dropped).
- * Captures `strict` when the caller set a boolean (top-level only; the
- * function wrapper never carries it on the wire).
+ * Captures `strict` when the caller set a boolean, at either wire placement:
+ * top-level (the Responses/Kilo/Anthropic position) or inside the chat
+ * `function` wrapper (the canonical chat position).
  */
 export function canonicalizeTool(tool: unknown): CanonicalTool | null {
  if (typeof tool !== "object" || tool === null || Array.isArray(tool)) return null;
@@ -307,21 +310,21 @@ export function canonicalizeTool(tool: unknown): CanonicalTool | null {
   parameters: schemaOf(t, fn),
  };
  if (typeof t.strict === "boolean") canon.strict = t.strict;
+ else if (fn && typeof fn.strict === "boolean") canon.strict = fn.strict;
  return canon;
 }
 
 /** Canonical tool -> Chat Completions shape. Carries `strict` verbatim when set. */
 export function toChatTool(t: CanonicalTool): Record<string, unknown> {
- const out: Record<string, unknown> = {
-  type: "function",
-  function: {
-   name: t.name,
-   description: t.description,
-   parameters: t.parameters,
-  },
+ const fn: Record<string, unknown> = {
+  name: t.name,
+  description: t.description,
+  parameters: t.parameters,
  };
- if (typeof t.strict === "boolean") out.strict = t.strict;
- return out;
+ // The chat wire puts `strict` inside the `function` wrapper (canonical
+ // position); a top-level `strict` on the tool object is not the chat shape.
+ if (typeof t.strict === "boolean") fn.strict = t.strict;
+ return { type: "function", function: fn };
 }
 /** Canonical tool -> Responses shape. Carries `strict` verbatim when set. */
 export function toResponsesTool(t: CanonicalTool): Record<string, unknown> {

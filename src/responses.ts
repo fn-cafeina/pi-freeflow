@@ -297,6 +297,12 @@ export function prepareChatFailoverBody(parsedBody: Record<string, unknown>): vo
  if (typeof parsedBody.max_tokens === "number" && parsedBody.max_tokens > KILO_FAILOVER_MAX_OUTPUT_TOKENS) {
   parsedBody.max_tokens = KILO_FAILOVER_MAX_OUTPUT_TOKENS;
  }
+ if (
+  typeof parsedBody.max_completion_tokens === "number" &&
+  parsedBody.max_completion_tokens > KILO_FAILOVER_MAX_OUTPUT_TOKENS
+ ) {
+  parsedBody.max_completion_tokens = KILO_FAILOVER_MAX_OUTPUT_TOKENS;
+ }
 }
 
 /**

@@ -48,6 +48,13 @@ const O = (properties: Record<string, unknown>, required?: string[]): Record<str
 	required ? { type: "object", properties, required } : { type: "object", properties };
 const S = (desc: string): Record<string, unknown> => ({ type: "string", description: desc });
 
+/** Reads `strict` from whichever wire placement the emitted tool carries. */
+function strictValueOf(out: Record<string, unknown>): unknown {
+	const fn = out.function as Record<string, unknown> | undefined;
+	if (fn && typeof fn.strict === "boolean") return fn.strict;
+	return out.strict;
+}
+
 // Real OMP inventory: 28 built-ins (builtin-names.ts + browser/computer).
 const OMP_FIXTURES: Fixture[] = [
 	{
@@ -379,9 +386,13 @@ for (const fx of ALL_FIXTURES) {
 				assert.equal(upstreamDescOf(out), fx.description, `${where}: description verbatim`);
 				assert.deepEqual(upstreamParamsOf(out), fx.parameters, `${where}: params verbatim`);
 				if (typeof fx.strict === "boolean") {
-					assert.equal(out.strict, fx.strict, `${where}: strict verbatim`);
+					// `strict` re-emits at the target wire position: top-level on
+					// the Responses/Anthropic shapes, inside the chat `function`
+					// wrapper. A same-shape passthrough keeps the caller's own.
+					assert.deepEqual(strictValueOf(out), fx.strict, `${where}: strict verbatim`);
 				} else {
-					assert.ok(!("strict" in out), `${where}: no strict invented`);
+					const fn = out.function as Record<string, unknown> | undefined;
+					assert.ok(!("strict" in out) && !(fn && "strict" in fn), `${where}: no strict invented`);
 				}
 				assert.equal(out.x_omp_usage, `${fx.name}-marker`, `${where}: extra field intact`);
 				assert.ok(
@@ -483,7 +494,7 @@ for (const fx of CUSTOM_FIXTURES) {
 				assert.equal(upstreamNameOf(out), fx.name, `${where}: name verbatim, never renamed/coerced`);
 				assert.equal(upstreamDescOf(out), fx.description, `${where}: description verbatim`);
 				assert.deepEqual(upstreamParamsOf(out), fx.parameters, `${where}: params verbatim`);
-				assert.equal(out.strict, false, `${where}: strict:false verbatim, never flipped or dropped`);
+				assert.deepEqual(strictValueOf(out), false, `${where}: strict:false verbatim, never flipped or dropped`);
 				assert.equal(out.x_omp_usage, `${fx.name}-marker`, `${where}: extra field intact`);
 				assert.ok(
 					!JSON.stringify(upstreamParamsOf(out)).includes("additionalProperties"),
@@ -519,7 +530,7 @@ test("omp usage: custom pair rides with the full 28-tool inventory, zero dropped
 		for (const fx of CUSTOM_FIXTURES) {
 			const found = out.find((t) => upstreamNameOf(t) === fx.name);
 			assert.ok(found, `${path}: keeps ${fx.name}`);
-			assert.equal(found?.strict, false, `${path}: ${fx.name} strict:false survives the full set`);
+			assert.deepEqual(strictValueOf(found), false, `${path}: ${fx.name} strict:false survives the full set`);
 		}
 		const again = translateToolsForPath(out, path);
 		assert.equal(again.length, 30, `${path}: re-translate idempotent, adds zero`);

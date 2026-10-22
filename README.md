@@ -189,21 +189,21 @@ The same command set works identically in OMP and Pi:
 /freeflow use <url|index|label>   # Switch active relay
 /freeflow url <url>               # Set the active relay URL directly
 /freeflow add <url> [label]       # Add new relay to the pool
-/freeflow label <index|url> <name># Assign a friendly label to a relay
+/freeflow label|rename <index|url> <name>  # Assign a friendly label to a relay
 /freeflow remove <index|url|label># Remove a relay from the pool
 /freeflow test <index|url|label>  # Probe a relay for reachability and latency
 /freeflow on|off|auto|sticky|spread  # Relay mode (auto/sticky = sticky primary, spread = rotate pool)
 /freeflow deploy <platform>       # Guided relay deploy: vercel|cloudflare|deno, token in-memory, auto-adds
-/freeflow logs [lines]            # Inspect recent proxy logs
+/freeflow logs [lines]            # Inspect recent proxy logs (alias: log)
 /freeflow trace [req-id]          # Tail logs filtered by request correlation ID
 /freeflow refresh                 # Reload the model catalog from live upstreams
 /freeflow reload models           # Alias of refresh
 /freeflow update                  # Check for and install a package update
-/freeflow autoupdate [on|off]     # View or toggle automatic background updates
+/freeflow autoupdate [on|off]     # View or toggle automatic background updates (also: update auto on|off)
 /freeflow install-startup         # Install the login-startup hook so the daemon comes up with your session
 /freeflow uninstall-startup       # Remove the login-startup hook
 /freeflow debug on | off          # Toggle full HTTP lifecycle debug logging
-/freeflow kill                    # Stop the shared proxy daemon now (restarts on next use)
+/freeflow kill                    # Stop the shared proxy daemon now (restarts on next use; aliases: stop, shutdown)
 /freeflow cline login               # Sign in through the browser, save to the per-user pool
 /freeflow cline accounts            # List saved Cline logins
 /freeflow cline logout              # Remove a saved Cline login

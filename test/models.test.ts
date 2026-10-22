@@ -45,11 +45,19 @@ test("all models have positive contextWindow and maxTokens", () => {
  }
 });
 
-test("the Cline Muse Spark entry uses openai-responses api", () => {
- const spark = getModelDef("cline-free/muse-spark-1.3-contributor");
- assert.ok(spark);
- assert.equal(spark?.api, "openai-responses");
- assert.equal(spark?.contextWindow, 1_048_576);
+test("no static model declares the responses api (the last one retired 2026-10-22)", () => {
+ // The Zen muse-spark contributor ids went first (1.3 on 2026-10-17, 1.2 on
+ // 2026-10-18), then Cline's Muse Spark 1.3 stopped resolving upstream on
+ // 2026-10-22 (404 "Cline has no such model"). The static catalog is all
+ // chat-completions now; the responses plumbing stays for stale caches and
+ // future ids (translation is locked in tool-translation.test.ts, the stale
+ // api repair in edges-catalog.test.ts).
+ assert.equal(ALL_MODELS.filter((m) => m.api === "openai-responses").length, 0);
+ assert.equal(getModelDef("cline-free/muse-spark-1.3-contributor"), undefined, "the retired Cline id must not resolve");
+ const glm = getModelDef("z-ai/glm-5.3-flash");
+ assert.ok(glm, "the surviving Cline model must resolve");
+ assert.equal(glm?.api, undefined, "the surviving Cline model is chat completions");
+ assert.equal(glm?.contextWindow, 1_048_576);
 });
 
 test("1M context window models are properly configured", () => {
@@ -57,12 +65,10 @@ test("1M context window models are properly configured", () => {
  // model in the catalog advertising >= 1M must be in that known list
  // (drift guard — no unaccounted-for 1M models).
 	const oneMillionModels = [
-		"cline-free/muse-spark-1.3-contributor",
 		"z-ai/glm-5.3-flash",
 		"glm-5.3-flash-free",
 		"cat-jam-free",
 		"mimo-v2.6-flash-free",
-		"exo-free",
 		"beam-free",
 		"deepseek-v4.1-flash-free",
 		"longcat-2.5-preview-free",
@@ -72,6 +78,11 @@ test("1M context window models are properly configured", () => {
 		"nvidia/nemotron-3-ultra-550b-a55b:free",
 		"nvidia/nemotron-3.5-lightning:free",
 		"poolside/laguna-s-2.1:free",
+		// Added 2026-10-22: two Zen/Kilo twin pairs at the 1M tier.
+		"minimax-m3.1-flash-free",
+		"minimax/minimax-m3.1-flash:free",
+		"nvidia/nemotron-3.5-super-vl:free",
+		"reflection/beam-free",
 	];
 
  for (const id of oneMillionModels) {
@@ -143,18 +154,6 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
 		assert.equal(beam.thinkingLevelMap?.max, "max");
 		assert.equal(getModelUpstream("beam-free"), "opencode");
 		assert.equal(getModelUpstream("beam"), "opencode");
-		const exo = getModelDef("exo-free");
-		assert.ok(exo);
-		assert.equal(exo.reasoning, true);
-		assert.equal(exo.contextWindow, 1_048_576);
-		assert.equal(exo.maxTokens, 131_072);
-		assert.deepEqual(exo.input, ["text", "image"]);
-		assert.equal(exo.thinkingLevelMap?.high, "high");
-		assert.equal(exo.thinkingLevelMap?.minimal, "minimal");
-		assert.equal(exo.thinkingLevelMap?.xhigh, "xhigh");
-		assert.equal(exo.thinkingLevelMap?.max, null);
-		assert.equal(getModelUpstream("exo-free"), "opencode");
-		assert.equal(getModelUpstream("exo"), "opencode");
 	});
 
 test("2026-09-28 pruned models stay out of the static catalog", () => {
@@ -197,6 +196,16 @@ test("model aliases resolve correctly to canonical IDs", () => {
  assert.equal(resolveCanonicalModelId("claude-sonnet-4.5-contributor-free"), "claude-sonnet-4.5-contributor-free");
  assert.equal(resolveCanonicalModelId("minimax-m2.1-free"), "minimax-m2.1-free");
  assert.equal(resolveCanonicalModelId("qwen3-coder-480b-free"), "qwen3-coder-480b-free");
+ // Added 2026-10-22: "flint" stays on the Zen lane, the Kilo twin is
+ // "flint-kilo"; "beam" and "nemotron-3.5-super-vl" stay on Zen while their
+ // Kilo twins get their own names.
+ assert.equal(resolveCanonicalModelId("minimax-m3.1-flash"), "minimax-m3.1-flash-free");
+ assert.equal(resolveCanonicalModelId("flint"), "flint-40b-free");
+ assert.equal(resolveCanonicalModelId("flint-kilo"), "recursive/flint-v1.0:free");
+ assert.equal(resolveCanonicalModelId("beam-kilo"), "reflection/beam-free");
+ assert.equal(resolveCanonicalModelId("xing4.0"), "xingchen-agi/xing4.0-29b-a4b:free");
+ assert.equal(resolveCanonicalModelId("beam"), "beam-free");
+ assert.equal(resolveCanonicalModelId("nemotron-3.5-super-vl"), "nemotron-3.5-super-vl-free");
  // removed :free duplicate aliases must not be needed (canonical passthrough)
 
  const dotsAlias = getModelDef("dots-3-note-preview");
@@ -206,6 +215,72 @@ test("model aliases resolve correctly to canonical IDs", () => {
 
  const allRegistered = getAllRegisteredModels();
  assert.equal(allRegistered.length, ALL_MODELS.length);
+});
+
+test("2026-10-22 additions: seven lane-verified entries and their twins", () => {
+	const zenLane: Array<[string, number, number]> = [
+		["minimax-m3.1-flash-free", 1_000_000, 524_288],
+		["flint-40b-free", 262_144, 65_536],
+	];
+	for (const [id, ctx, max] of zenLane) {
+		const m = getModelDef(id);
+		assert.ok(m, `${id} exists`);
+		assert.equal(m!.contextWindow, ctx, `${id} context`);
+		assert.equal(m!.maxTokens, max, `${id} max`);
+		assert.equal(m!.reasoning, true, `${id} reasoning`);
+		assert.equal(m!.api, undefined, `${id} stays chat-native (no api override)`);
+		assert.equal(m!.thinkingFormat, undefined, `${id} stays on the flat Zen effort shape`);
+		assert.equal(getModelUpstream(id), "opencode", `${id} must route to Zen`);
+		const map = m!.thinkingLevelMap!;
+		assert.equal(map.off, null, `${id}.off`);
+		assert.equal(map.minimal, null, `${id}.minimal`);
+		assert.equal(map.low, "low", `${id}.low`);
+		assert.equal(map.xhigh, "xhigh", `${id}.xhigh`);
+		assert.equal(map.max, "max", `${id}.max`);
+	}
+	assert.deepEqual(getModelDef("minimax-m3.1-flash-free")!.input, ["text", "image"]);
+	assert.deepEqual(getModelDef("flint-40b-free")!.input, ["text"]);
+
+	const kiloLane: Array<[string, number, number, string[]]> = [
+		["minimax/minimax-m3.1-flash:free", 1_000_000, 524_288, ["text", "image"]],
+		["nvidia/nemotron-3.5-super-vl:free", 1_000_000, 131_072, ["text", "image"]],
+		["reflection/beam-free", 1_048_576, 131_072, ["text"]],
+		["recursive/flint-v1.0:free", 262_144, 65_536, ["text"]],
+		["xingchen-agi/xing4.0-29b-a4b:free", 262_144, 235_929, ["text"]],
+	];
+	for (const [id, ctx, max, input] of kiloLane) {
+		const m = getModelDef(id);
+		assert.ok(m, `${id} exists`);
+		assert.equal(m!.contextWindow, ctx, `${id} context`);
+		assert.equal(m!.maxTokens, max, `${id} max`);
+		assert.equal(m!.reasoning, true, `${id} reasoning`);
+		assert.deepEqual(m!.input, input, `${id} input`);
+		assert.equal(m!.thinkingFormat, "openrouter", `${id} uses the nested reasoning shape`);
+		assert.equal(m!.api, undefined, `${id} stays chat-native (no api override)`);
+		assert.equal(getModelUpstream(id), "kilo", `${id} must route to Kilo`);
+		assert.equal(isKiloModel(id), true, `${id} must be recognized as a Kilo id`);
+	}
+
+	// Twin pairs must stay on their own lanes: the Zen and Kilo twins are
+	// distinct catalog ids and neither may shadow the other.
+	assert.notEqual(
+		resolveCanonicalModelId("flint"),
+		resolveCanonicalModelId("flint-kilo"),
+		"Zen and Kilo flint twins must not collapse",
+	);
+	assert.notEqual(
+		resolveCanonicalModelId("beam"),
+		resolveCanonicalModelId("beam-kilo"),
+		"Zen and Kilo beam twins must not collapse",
+	);
+	assert.equal(getModelUpstream("flint"), "opencode");
+	assert.equal(getModelUpstream("flint-kilo"), "kilo");
+	assert.equal(getModelUpstream("beam"), "opencode");
+	assert.equal(getModelUpstream("beam-kilo"), "kilo");
+	// The two minimax twins are different lanes with the same served boundary.
+	assert.equal(getModelUpstream("minimax-m3.1-flash"), "opencode");
+	assert.equal(getModelDef("minimax-m3.1-flash")!.contextWindow, 1_000_000);
+	assert.equal(getModelDef("minimax/minimax-m3.1-flash:free")!.contextWindow, 1_000_000);
 });
 
 test("every reasoning model declares a thinkingLevelMap so the picker is lockable", () => {
@@ -278,11 +353,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
 	// Added 2026-10-17: Reflection AI's Beam 501B open-weight MoE model, limited-time
 	// free model on Zen (/zen/v1/models: beam-free); boundary probe up to 900k words (~1.1M tokens).
 	"beam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
-	// Added 2026-10-16 (recheck): revived upstream the same day - back on
-	// the official free lineup, chat 200 with tools/stream/reasoning/vision;
-	// dual-canary recall at ~520K tokens and the 1.2M-word empty-400 wall
-	// bracket the published 1,048,576.
-	"exo-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Added 2026-10-15 (live: Zen /v1/models listing + gated-lane 200 carrying the
   // full fingerprint; chat-only, /v1/responses answers 400 ModelProtocolUnsupported).
   // Reconciled 2026-10-20: 1,048,576 ctx now matches the published twin AND the
@@ -292,6 +362,16 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // named paid id. Output 393,216, the live gateway boundary (384 * 1024) and
   // the highest twin figure; models.dev rounds it to 384,000.
   "deepseek-v4.1-flash-free": { ctx: 1_048_576, max: 393_216, reasoning: true },
+  // Added 2026-10-22: measured on the lane — needle recalled at
+  // prompt_tokens 991,641, >1M refused; 524,288 output accepted, 600,000
+  // refused "does not support max tokens > 524288" (models.dev rounds to
+  // 512,000; the boundary is the budget).
+  "minimax-m3.1-flash-free": { ctx: 1_000_000, max: 524_288, reasoning: true },
+  // Added 2026-10-22: the gateway refuses a 323,580-token input with
+  // "longer than the model's context length (262144)" and recalls a needle at
+  // prompt_tokens 129,736; 65,536 output is the published figure (70,000 is
+  // also accepted, so acceptance is not a cap).
+  "flint-40b-free": { ctx: 262_144, max: 65_536, reasoning: true },
   // KiloCode Gateway
   // Kilo publishes 512,000 ctx / 460,800 out, but the only provider behind
   // this free id (atlas-cloud) serves a 393,216-token total window. Re-probed
@@ -316,8 +396,25 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
 	// Retired 2026-10-09 (demoted to paid upstream — :free IDs 404 keyless)
 	// Added 2026-10-09 (live: Kilo free list isFree:true + keyless chat served; 256K/1M ctx)
 	"stealth/glyph-cluster": { ctx: 256_000, max: 256_000, reasoning: true },
+  // Added 2026-10-22: gateway `top_provider` 1,000,000 / 524,288 — the same
+  // output boundary the Zen twin measured (524,288 accepted, 600,000 refused).
+  "minimax/minimax-m3.1-flash:free": { ctx: 1_000_000, max: 524_288, reasoning: true },
+  // Added 2026-10-22: the FREE row — Kilo free listing, gateway top_provider,
+  // the Kilo model page, OpenRouter and models.dev all publish 1,000,000 /
+  // 131,072. The 262,144 / 235,929 pair is the PAID row behind another id.
+  "nvidia/nemotron-3.5-super-vl:free": { ctx: 1_000_000, max: 131_072, reasoning: true },
+  // Added 2026-10-22: Kilo twin of Zen `beam-free`; gateway, models.dev
+  // (kilo/vercel/opencode rows) and the vendor docs all agree.
+  "reflection/beam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  // Added 2026-10-22: same weights as Zen `flint-40b-free`, which publishes
+  // 65,536 output. Prompt and output share the 262,144 window per the vendor
+  // card; the gateway's 235,929 is its 0.9x-window convention.
+  "recursive/flint-v1.0:free": { ctx: 262_144, max: 65_536, reasoning: true },
+  // Added 2026-10-22: lane-published gateway top_provider 262,144 / 235,929.
+  // No cross-lane twin exists; both figures carry the same 0.9x-window
+  // convention (prompt and output share the window).
+  "xingchen-agi/xing4.0-29b-a4b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
-  "cline-free/muse-spark-1.3-contributor": { ctx: 1_048_576, max: 131_072, reasoning: true },
   "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
   // advertised windows (the lane hard-caps there); max is the highest
@@ -413,7 +510,6 @@ test("new alias map resolves to canonical kilo ids", () => {
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash"), "mimo-v2.6-flash-free");
 	assert.equal(resolveCanonicalModelId("glm-5.3-flash"), "glm-5.3-flash-free");
 	assert.equal(resolveCanonicalModelId("beam"), "beam-free");
-	assert.equal(resolveCanonicalModelId("exo"), "exo-free");
 });
 
 test("union-alpha is pruned from the static catalog", () => {
@@ -447,6 +543,12 @@ test("muse-spark-1.2-contributor-free is retired and cannot re-enter the catalog
 	assert.equal(MODEL_MAP.get("muse-spark-1.2-contributor-free"), undefined, "muse-spark-1.2-contributor-free must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "muse-spark-1.2-contributor-free"), false, "muse-spark-1.2-contributor-free must not be in ALL_MODELS");
 	assert.ok(DEAD_MODEL_IDS.has("muse-spark-1.2-contributor-free"), "the retired id must be dead-listed so stale caches and upstream merges cannot revive it");
+});
+
+test("cline-free/muse-spark-1.3-contributor is retired and cannot re-enter the catalog", () => {
+	assert.equal(MODEL_MAP.get("cline-free/muse-spark-1.3-contributor"), undefined, "the retired Cline id must not be in MODEL_MAP");
+	assert.equal(ALL_MODELS.some((m) => m.id === "cline-free/muse-spark-1.3-contributor"), false, "the retired Cline id must not be in ALL_MODELS");
+	assert.ok(DEAD_MODEL_IDS.has("cline-free/muse-spark-1.3-contributor"), "the retired id must be dead-listed so stale caches and upstream merges cannot revive it");
 });
 
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {

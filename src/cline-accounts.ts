@@ -130,9 +130,10 @@ const CLINE_CLIENT_VERSION = "3.5.54";
  * `cline-free/*` id space (measured live 2026-09-22: that prefix answers 403
  * "only available via Cline product surfaces" with a bare bearer, and 200 with
  * this set; every non-prefixed id answers 200 either way). The header is kept
- * because one catalog id still depends on it — after the 2026-10-13 prune,
- * `cline-free/muse-spark-1.3-contributor` is the last prefixed model in the
- * catalog. It also decided the free-model feed at the time: five entries for
+ * because `cline-free/*` ids can still appear in a stale host registration —
+ * until 2026-10-13 that prefix covered four models, and
+ * `cline-free/muse-spark-1.3-contributor` survived it until 2026-10-22. It also
+ * decided the free-model feed at the time: five entries for
  * `cline-sdk` / `cline-cli` / the `VSCode Extension` label against six for
  * `cline-desktop`, the extra one being `cline-free/kimi-k3`. That sixth model
  * is retired upstream and no longer requested. Version and User-Agent stay

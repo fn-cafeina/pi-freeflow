@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 32 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 37 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,12 +16,13 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **32 free models** | 11 from OpenCode Zen, 11 from KiloCode Gateway, 2 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **37 free models** | 12 from OpenCode Zen, 16 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
-| **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the two Cline models have no alias and must be typed in full. | **$0** |
+| **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the Cline model has no alias and must be typed in full. | **$0** |
 | **Shared local proxy** | One daemon on `127.0.0.1:28180` serves every session on the machine, so parallel subagents reuse it instead of opening their own connections. Loopback-only and token-gated: hosts send the token automatically, external tools read `~/.pi/agent/token`. | **$0** |
 | **Logs you can read** | `~/.pi/agent/pi-freeflow.log`, rotated at 10MB. Tail it with `/freeflow logs`. | **$0** |
+| **Tool-call diagnostics** | `~/.pi/agent/toolcall-audit.jsonl`, rotated at 5MB. One line per streamed turn that declared tools (and per non-streamed Chat Completions turn) — the calls it made, argument size and validity, finish reason, classified failure — plus one line per abandoned upstream attempt. Names, sizes and reasons only. | **$0** |
 
 ---
 
@@ -213,17 +214,17 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 32 models, one command
+### 37 models, one command
 
 ```bash
 /model → freeflow → pick
 ```
 
-Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-20: a free and a non-free variant of the same model share the highest published context window, output ceiling, and input modalities across its twins. The catalog follows that published spec even where a free lane enforces a lower runtime cap; the authentic upstream error is surfaced above it. (Measured runtime caps: MiMo ~348K, GLM 5.3 Flash ~297K, Laguna S 262K.) Lane-published hard caps stay authoritative where the lane refuses above them: OVH's advertised context windows, the 1,000,000-token Nemotron 3 Ultra ceiling, and Dots3-Note's 393,216 served window (its only provider refused a 460,800 output budget on 2026-10-20).
+Every model specification is reconciled against [models.dev](https://models.dev/), [OpenRouter](https://openrouter.ai/), and OMP's built-in catalog on 2026-10-22: a free and a non-free variant of the same model share the highest published context window, output ceiling, and input modalities across its twins. The catalog follows that published spec even where a free lane enforces a lower runtime cap; the authentic upstream error is surfaced above it. Where the lane itself refuses above a published figure, the served boundary wins (MiniMax M3.1 Flash: published 512,000, served 524,288). (Measured runtime caps: MiMo ~348K, GLM 5.3 Flash ~297K, Laguna S 262K.) Lane-published hard caps stay authoritative where the lane refuses above them: OVH's advertised context windows, the 1,000,000-token Nemotron 3 Ultra ceiling, and Dots3-Note's 393,216 served window (its only provider refused a 460,800 output budget on 2026-10-20).
 
 The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
 
-#### OpenCode Zen (11 models), Chat Completions API
+#### OpenCode Zen (12 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
@@ -238,19 +239,20 @@ Good defaults for long coding sessions and agentic work.
 | `longcat-2.5-preview-free` | Meituan LongCat | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `glm-5.3-flash-free` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low / high / max` | ✅ |
 | `beam-free` | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
-| `exo-free` | Undisclosed | **1M** (1.048.576) | **131K** (131.072) | `minimal … xhigh` | ✅ |
 | `deepseek-v4.1-flash-free` | DeepSeek | **1M** (1.048.576) | **393K** (393.216) | `low / high / max` | ✅ |
+| `minimax-m3.1-flash-free` | MiniMax | **1M** (1.000.000) | **512K** (524.288) | `low … max` | ✅ |
+| `flint-40b-free` | Recursive | **262K** (262.144) | **65K** (65.536) | `low … max` | ❌ |
 
-#### KiloCode Gateway (11 models), OpenRouter compatible
+#### KiloCode Gateway (16 models), OpenRouter compatible
 
-Keyless access. Short aliases work for every row (the full ID is in parentheses).
+Keyless access. Most rows have a short alias (shown with the full ID in parentheses); a row that shows only the full ID has no short form.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `dots-3-note-preview` (`dots-studio/...:free`) | Dots Studio | **384K** (393.216) | **256K** (262.144) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-nano-omni` (`nvidia/...:free`) | NVIDIA | **262K** (262.144) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `nemotron-3-ultra-550b` (`nvidia/...:free`) | NVIDIA | **1M** (1.000.000) | **182K** (182.520) | `minimal…xhigh`\* | ❌ |
-| `nvidia/nemotron-3.5-lightning:free` | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
+| `nemotron-3.5-lightning` (`nvidia/nemotron-3.5-lightning:free`) | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
 | `north-mini-code` (`cohere/...:free`) | Cohere | **256K** (256.000) | **64K** (64.000) | `minimal…xhigh`\* | ❌ |
 | `laguna-s-2.1:free` (`poolside/...:free`) | Poolside | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ❌ |
 | `laguna-xs-2.1:free` (`poolside/...:free`) | Poolside | **262K** (262.144) | **32K** (32.768) | `minimal…xhigh`\* | ❌ |
@@ -258,10 +260,15 @@ Keyless access. Short aliases work for every row (the full ID is in parentheses)
 | `kilo-auto` (`kilo-auto/free`) | Kilo Gateway Auto | **256K** (256.000) | **10K** (10.000) | `minimal…xhigh`\* | ❌ |
 | `openrouter` (`openrouter/free`) | OpenRouter Free | **200K** (200.000) | **65K** (65.536) | `minimal…xhigh`\* | ✅ |
 | `glyph-cluster` (`stealth/glyph-cluster`) | Stealth preview (lab undisclosed) | **256K** (256.000) | **256K** (256.000) | `minimal…xhigh`\* | ❌ |
+| `minimax/minimax-m3.1-flash:free` | MiniMax | **1M** (1.000.000) | **512K** (524.288) | `low…max`\* | ✅ |
+| `nvidia/nemotron-3.5-super-vl:free` | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
+| `beam-kilo` (`reflection/beam-free`) | Reflection AI | **1M** (1.048.576) | **131K** (131.072) | `low…max`\* | ❌ |
+| `flint-kilo` (`recursive/flint-v1.0:free`) | Recursive | **262K** (262.144) | **65K** (65.536) | `minimal…xhigh`\* | ❌ |
+| `xing4.0` (`xingchen-agi/xing4.0-29b-a4b:free`) | XingChen | **262K** (262.144) | **235K** (235.929) | `minimal…xhigh`\* | ❌ |
 
 \* Levels are forwarded as-is through the OpenRouter-style nested `reasoning` parameter; effort mapping is decided by each model. MiMo collapses `minimal→low` and `xhigh→high` upstream, so its selector shows 5 labels but only 3 distinct effort values.
 
-#### Cline (2 models), OpenAI compatible
+#### Cline (1 model), OpenAI compatible
 
 Rotating per-account promo, direct only (never through the relay pool). Sign in through your browser with `/freeflow cline login`, manage with `/freeflow cline accounts` and `/freeflow cline logout`. Requests roll across saved logins when one hits its daily free limit.
 
@@ -271,7 +278,6 @@ Each account can only be saved once: an extra login for an account you already h
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `cline-free/muse-spark-1.3-contributor` | Meta Superintelligence Labs | **1M** (1.048.576) | **131K** (131.072) | `minimal…xhigh`\* | ✅ |
 | `z-ai/glm-5.3-flash` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low/high/max` | ✅ |
 #### OVHcloud AI Endpoints (8 models), OpenAI compatible
 
@@ -303,13 +309,21 @@ cat ~/.pi/agent/pi-freeflow.log | tail -n 50
 /freeflow debug on
 ```
 
+**Tool-call audit.** A streamed turn that declares tools — and a non-streamed Chat Completions turn — also writes a line to `~/.pi/agent/toolcall-audit.jsonl`, so a turn the host abandoned or retried can be explained without reproducing it:
+
+- `summary` — one line per finished turn: the tool names the caller declared, the calls the model made (argument byte size and whether they parsed), the finish reason, and a classified failure when there was one.
+- `attempt-failure` — one line per upstream attempt abandoned in favour of another, with the reason (rate limit, timeout, payload too large, rejected relay, final upstream verdict) and the HTTP status when one arrived.
+- `retry-detected` — the host re-sent a conversation the proxy had already seen; `retryOf` names the earlier turn and carries its failure.
+
+The log holds names, sizes, booleans and reasons only: no message text, no tool schemas, no argument values. It rotates once to `toolcall-audit.jsonl.1` at 5MB, and a turn that declared no tools writes nothing. `docs/pages/architecture.md` documents every field and has jq recipes for the common questions.
+
 ---
 
 ### Design
 
-This package stays thin. It ships three things: a model catalog, a relay proxy, and a log. There is no build step and one runtime dependency (`undici`). Thinking and prompt normalization stay with the host (`pi-ai`).
+This package stays thin. It ships three things: a model catalog, a relay proxy, and logs. There is no build step and one runtime dependency (`undici`). Thinking and prompt normalization stay with the host (`pi-ai`).
 
-About 52k lines including tests: `src/` is roughly 19.4k across 30 files, and the 90 test files add roughly 32.4k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
+About 57k lines including tests: `src/` is roughly 21.1k across 31 files, and the 93 test files add roughly 35.6k more. The full suite (sandboxed, network-mocked) and typecheck pass before every release. See CHANGELOG.md.
 
 ---
 
@@ -382,7 +396,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 32-model catalog definitions
+├── models.ts                # 37-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)
@@ -398,6 +412,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ├── probe.ts                 # relay reachability and latency probe
 ├── upstream-health.ts       # Zen free-tier gating watch and Kilo failover
 ├── stream-pipe.ts           # SSE stream piping and truncation resilience
+├── toolcall-audit.ts        # per-turn tool-call audit log (names and sizes only)
 ├── opencode-fingerprint.ts  # Zen free-tier client fingerprint enforcement
 ├── system-ca-fetch.ts       # OS-trust-store retry for intercepted TLS
 ├── commands.ts              # /freeflow CLI subcommands
@@ -405,7 +420,9 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 ├── cline-accounts.ts        # per-slot Cline key pool with failover
 ├── cline-device-auth.ts     # Cline WorkOS device-flow login
 ├── update-checker.ts        # npm registry version check, cached
+├── update-core.ts           # version facts and update step runner
 ├── updater.ts               # package-manager choice for /freeflow update
+├── atomic-write.ts          # temp-file + rename writes, retried across Windows locks
 ├── config.ts                # constants, whitelists, paths, and runtime settings
 ├── logger.ts                # file logger with 10MB rotation
 └── types.ts                 # shared type definitions

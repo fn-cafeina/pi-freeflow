@@ -368,6 +368,48 @@ test("sseToChatCompletionJson: one call split across deltas still reassembles wh
 	assert.deepEqual(JSON.parse(calls[0].function.arguments), { command: "ls" });
 });
 
+test("sseToChatCompletionJson: a restated name on the arguments frame replaces, never appends", () => {
+	// Observed live from OpenCode Zen on 2026-10-22: the gateway streams one
+	// tool call as TWO frames that both carry the complete name — a name-only
+	// frame, then a frame repeating that name with the arguments. Appending
+	// accumulated `get_weatherget_weather`, a tool name no declaration matches,
+	// which streamed hosts papered over (they bind by index) and non-stream
+	// callers did not.
+	const sse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_w","type":"function","function":{"name":"get_weather"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"type":"function","function":{"name":"get_weather","arguments":"{\\"city\\":\\"Tokyo\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const res = sseToChatCompletionJson(sse, true) as {
+		choices: Array<{ message: { tool_calls: Array<{ id: string; function: { name: string; arguments: string } }> } }>;
+	};
+	const calls = res.choices[0].message.tool_calls;
+	assert.equal(calls.length, 1, "the repeat header must not open a second call");
+	assert.equal(calls[0].function.name, "get_weather", "the restated name is authoritative, not appended");
+	assert.deepEqual(JSON.parse(calls[0].function.arguments), { city: "Tokyo" }, "arguments intact");
+});
+
+test("sseToChatCompletionJson: a name split across deltas still reassembles", () => {
+	// The ordinary piecewise shape: name-only deltas carry the next slice of
+	// the name and must keep appending, so the replace-on-arguments rule above
+	// never truncates a streamed name to its last fragment.
+	const sse = [
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_w","type":"function","function":{"name":"get_"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"name":"weather"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":\\"Tokyo\\"}"}}]}}]}',
+		'data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}',
+		"data: [DONE]",
+	].join("\n\n");
+	const res = sseToChatCompletionJson(sse, true) as {
+		choices: Array<{ message: { tool_calls: Array<{ function: { name: string; arguments: string } }> } }>;
+	};
+	const calls = res.choices[0].message.tool_calls;
+	assert.equal(calls.length, 1);
+	assert.equal(calls[0].function.name, "get_weather", "name fragments append in order");
+	assert.deepEqual(JSON.parse(calls[0].function.arguments), { city: "Tokyo" });
+});
+
 test("sseToChatCompletionJson: id-less streams still split on distinct indices", () => {
 	// Providers that send no id at all keep working through the index fallback.
 	const sse = [

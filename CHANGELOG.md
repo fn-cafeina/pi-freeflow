@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.41.0
+
+### Minor Changes
+
+- Add seven new free models — all keyless — for 37 in total (12 OpenCode Zen + 16 KiloCode Gateway + 1 Cline + 8 OVHcloud AI Endpoints).
+  
+  New on OpenCode Zen:
+  
+  - `minimax-m3.1-flash-free` (MiniMax M3.1 Flash): 1M context, 524,288 output, vision. Effort `low` through `max`.
+  - `flint-40b-free` (Flint 40B): 262,144 context, 65,536 output, text-only. Effort `low` through `max`. Availability is bursty — an upstream 503 burst means retry, not that the model is gone.
+  
+  New on KiloCode Gateway (OpenRouter-style reasoning, keyless):
+  
+  - `minimax/minimax-m3.1-flash:free` (MiniMax M3.1 Flash): 1M context, 524,288 output, vision. Reasoning is mandatory upstream and there are no reasoning deltas on tool turns.
+  - `nvidia/nemotron-3.5-super-vl:free` (Nemotron 3.5 Super VL): 1M context, 131,072 output, vision. NVIDIA's trial terms allow training on prompts, and `max` effort can draw a transient 502/503 worth retrying.
+  - `reflection/beam-free` (Beam 1.0), alias `beam-kilo`: 1,048,576 context, 131,072 output, text-only. Reasoning is always on.
+  - `recursive/flint-v1.0:free` (Flint 40B), alias `flint-kilo`: 262,144 context, 65,536 output, text-only. Thinking is mandatory and can consume a tight output budget.
+  - `xingchen-agi/xing4.0-29b-a4b:free` (Xing4.0 29B A4B), alias `xing4.0`: 262,144 context, 235,929 output, text-only. Expect the shared upstream 429 quota often; that is a rate limit, not a dead model.
+  
+  Short names: `minimax-m3.1-flash` and `flint` stay on the Zen lane. The Kilo twins answer to `flint-kilo` and `beam-kilo`, while `beam` and `nemotron-3.5-super-vl` keep pointing at their existing Zen entries, so no saved selection changes lane.
+
+### Patch Changes
+
+- Protocol cleanup around reasoning effort, failover limits and tool definitions.
+  
+  Three small drifts between what a lane accepted and what it advertised are settled. Unsupported reasoning-effort knobs are now clamped on the Chat Completions path exactly as the Responses path already clamped them, so a too-high or unsupported level keeps the turn on the same model instead of walking into an upstream refusal. Failover bodies headed to Kilo now clamp `max_completion_tokens` alongside `max_tokens`, saving a wasted round trip. The user-facing tool definitions now carry `strict` in the position the Chat Completions shape canonically uses, with both positions still accepted when reading a caller's tools back.
+  
+  The Anthropic-shaped messages lane no longer deletes Anthropic-native forced tool choices (`any` or a named tool) — it was documented to keep the caller's own choice semantics and now actually does; the chat and Responses lanes still normalize choices to `auto`-or-absent as upstream requires.
+- Two OVH-hosted models no longer lose their answer to an upstream quirk, and an empty upstream stream now reports itself instead of looking like a blank reply.
+  
+  Qwen3.8 27B on OVH answers a request carrying a thinking-effort knob with an empty stream; the proxy now drops that knob for this one model, so the turn produces the model's own reasoning and answer as usual. Mistral Small 3.2 24B requires tool-call ids of exactly nine letters and digits and discards the whole turn otherwise, so ids replayed from your session history are rewritten to that shape — consistently, so an assistant call and the tool result that answers it still match.
+  
+  When OVH does return nothing at all, a non-streaming request now answers with a clear `502` and "upstream returned an empty stream" instead of a fabricated empty completion.
+- Retire Cline's `cline-free/muse-spark-1.3-contributor` from the catalog.
+  
+  Cline stopped resolving the id: every request answers HTTP 404 `model not found` with the hint `Cline has no such model`, while the sibling Cline model still resolves on the same account. The picker no longer offers Muse Spark 1.3. The id stays on the retired list, so a stale local cache or a refreshed upstream listing cannot bring it back.
+  
+  The Cline model that remains (`z-ai/glm-5.3-flash`) still works once the signed-in account has free credit. Clients that already saved the retired model simply stop seeing it.
+- Retire `exo-free` from the catalog.
+  
+  The free endpoint answers HTTP 410 "Model exo-free has been deprecated" on every request path and the model is no longer on the service's model list, so the picker no longer offers it. The id stays on the retired list, which means a stale local cache or a refreshed upstream listing cannot put it back.
+- Parallel tool calls streamed through the proxy no longer corrupt each other.
+  
+  Several free models label every parallel tool call with the same index while still giving each call its own id. On streamed turns the proxy merged calls by index alone, so the argument fragments of two parallel calls interleaved into one packet: one call could vanish entirely, or the arguments came through as glued-alongside JSON the host had to reject (which looked like the model failing at tool calling and the turn being retried). Streamed tool calls are now tracked the same way the assembled (non-streamed) ones always were — per call id, falling back to the wire index only when a call carries none — and a call whose index collides with another is renumbered so the host still sees two well-formed, re-executable calls. Streams with a single tool call are byte-for-byte unchanged.
+- Streamed tool calls now reach the client with the tool name exactly once.
+  
+  One upstream (OpenCode Zen) streams a single tool call as two frames that BOTH carry the complete name: a name-only frame, then a frame repeating that name together with the arguments. The proxy appended every name it saw, so the assembled call came out named `get_weatherget_weather` — a name no tool declaration matches. Streamed hosts bound the call by index and happened to tolerate it; anything reading the non-streamed aggregate, and any host that trusts the assembled packet, got a call it could not execute. A name that arrives alongside arguments is now treated as the authoritative whole name and replaces what was accumulated, while name-only deltas keep appending so ordinary piecewise-streamed names still reassemble. Both the streamed path and the assembled path apply the same rule.
+- Failed and retried tool-call turns are now recorded locally so they can be diagnosed after the fact.
+  
+  Every streamed turn that declared tools — and every non-streamed Chat Completions turn — leaves one line in `<data dir>/toolcall-audit.jsonl` describing how it ended: the caller's declared tool names, the calls the model actually made (name, argument size, whether the arguments parsed, whether the name was one the caller declared), the finish reason, and the classified failure. A turn where the model answered with plain text instead of calling a tool, or called a name the host never declared, now says so instead of vanishing into a generic red error. A Responses or Messages body served without an event stream is recorded as unclassifiable rather than counted against the model.
+  
+  Each upstream attempt abandoned in favour of another is recorded with its reason — rate limit, gateway timeout, payload limit, relay auth rejection, header timeout, socket fault — and, when the host re-sends the same conversation within ten minutes, the new turn carries the earlier one's request id and failure, so a failed first attempt and its host retry are attributable to one conversation.
+  
+  The log records names, sizes, booleans and reasons only: message text, tool schemas and tool-argument values are never written. It is best-effort, never affects a request, stays empty for turns that declared no tools, and rotates to `.1` at 5 MiB. Two `jq` one-liners in the architecture docs list failures by model and retried conversations.
+
 ## 1.40.1
 
 ### Patch Changes

@@ -804,6 +804,110 @@ test("proxy e2e: ovh chat streaming restores the caller's tool names", async () 
 	assert.ok(clientBody.includes("git status --short"), "the glued bash payload is repaired on the streamed ovh lane too");
 });
 
+test("proxy e2e: ovh qwen3.8 drops reasoning_effort before the wire", async () => {
+	// Measured 2026-10-22: Qwen3.8-27B on OVH answers HTTP 200 whose body is a
+	// bare `data: [DONE]` whenever `reasoning_effort` is present (max_tokens
+	// 4000 and 32000 alike); without the field it streams its own reasoning.
+	// The lane strips the field for this model only.
+	let clientBody = "";
+	const upstream = await withProxyAndMock(29330, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(ovhChatSse("Qwen3.8-27B", "answered"));
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: "ovh-free/Qwen3.8-27B",
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+			reasoning_effort: "high",
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+	});
+	assert.ok(upstream);
+	assert.ok(!("reasoning_effort" in upstream), "qwen3.8 must never receive reasoning_effort upstream");
+	const client = JSON.parse(clientBody) as Record<string, unknown>;
+	const message = (client.choices as Array<Record<string, unknown>>)[0].message as Record<string, unknown>;
+	assert.equal(message.content, "answered", "the model answers normally once the field is gone");
+});
+
+test("proxy e2e: ovh gpt-oss-20b keeps reasoning_effort verbatim", async () => {
+	// The strip above is model-scoped: every other OVH model tolerates the
+	// field, so the lane must not silently rewrite their sampling knobs.
+	const upstream = await withProxyAndMock(29331, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(ovhChatSse("gpt-oss-20b", "kept"));
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: OVH_MODEL,
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+			reasoning_effort: "high",
+		});
+		assert.equal(res.status, 200);
+	});
+	assert.ok(upstream);
+	assert.equal(upstream.reasoning_effort, "high", "the qwen-only strip must not touch another ovh model");
+});
+
+test("proxy e2e: ovh mistral small normalizes non-conforming tool-call ids", async () => {
+	// Upstream rejects any replayed id that is not 9 alphanumerics: 400
+	// "Tool call id was ll_loop_1 but must be a-z, A-Z, 0-9, with a length of 9"
+	// when not streaming, and the same silent `[DONE]`-only 200 when it is. A
+	// host history id such as `call_loop_1` must be rewritten consistently on
+	// the assistant call and the tool message that answers it.
+	let clientBody = "";
+	const upstream = await withProxyAndMock(29332, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end(ovhChatSse("Mistral-Small-3.2-24B-Instruct-2506", "done"));
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
+			messages: [
+				{ role: "user", content: "hi" },
+				{ role: "assistant", content: null, tool_calls: [{ id: "call_loop_1", type: "function", function: { name: "find", arguments: '{"pattern":"*.ts"}' } }] },
+				{ role: "tool", tool_call_id: "call_loop_1", content: "a.ts" },
+			],
+			stream: false,
+		});
+		assert.equal(res.status, 200);
+		clientBody = res.body;
+	});
+	assert.ok(upstream);
+	const messages = upstream.messages as Array<Record<string, unknown>>;
+	const assistantId = String((messages[1].tool_calls as Array<Record<string, unknown>>)[0].id);
+	assert.match(assistantId, /^[A-Za-z0-9]{9}$/, "the replayed id must satisfy upstream's 9-alphanumeric rule");
+	assert.equal(messages[2].tool_call_id, assistantId, "the tool message must carry the same rewritten id");
+	assert.ok(!JSON.stringify(upstream.messages).includes("call_loop_1"), "no non-conforming id may survive upstream");
+	const client = JSON.parse(clientBody) as Record<string, unknown>;
+	const message = (client.choices as Array<Record<string, unknown>>)[0].message as Record<string, unknown>;
+	assert.equal(message.content, "done", "the turn passes through once the ids conform");
+});
+
+test("proxy e2e: an empty ovh upstream stream surfaces as a 502, never a fabricated turn", async () => {
+	// Starved OVH requests (defects above) close with a bare `data: [DONE]`.
+	// Aggregating that used to yield `chatcmpl-freeflow` with `content: null`
+	// and `finish_reason: "stop"` — a fabricated 200 completion that hid the
+	// upstream failure. It must surface as an error.
+	let clientBody = "";
+	let clientType = "";
+	await withProxyAndMock(29333, (res) => {
+		res.writeHead(200, { "content-type": "text/event-stream" });
+		res.end("data: [DONE]\n\n");
+	}, async (port) => {
+		const res = await postJson(port, "/v1/chat/completions", {
+			model: "ovh-free/Qwen3.8-27B",
+			messages: [{ role: "user", content: "hi" }],
+			stream: false,
+		});
+		assert.equal(res.status, 502, "an upstream that returns nothing is an upstream error");
+		clientType = String(res.headers["content-type"] ?? "");
+		clientBody = res.body;
+	});
+	assert.ok(clientType.includes("application/json"), "the error is JSON, not an SSE stream");
+	assert.ok(clientBody.includes("upstream returned an empty stream"), "the error names the emptiness");
+	assert.ok(!clientBody.includes("chatcmpl-freeflow"), "never emit the fabricated empty completion");
+});
+
 test("proxy e2e: cline responses returns the caller's own tool name", async () => {
 	const read = (p: string): string | null => (fs.existsSync(p) ? fs.readFileSync(p, "utf8") : null);
 	const mainBefore = read(CLINE_POOL_FILE);

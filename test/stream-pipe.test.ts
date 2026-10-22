@@ -19,8 +19,10 @@ import {
 	_setBodyStallCutForTest,
 	getSseStats,
 	pipeUpstreamStream,
+	type StreamCloakOptions,
 	type StreamPipeOptions,
 } from "../src/stream-pipe.ts";
+import type { ToolcallStreamAudit } from "../src/toolcall-audit.ts";
 import {
 	getRelayHealth,
 	isRelayHealthy,
@@ -1008,4 +1010,368 @@ test("body-stall cut without a rescuer ends the turn with a synthetic terminal",
 	} finally {
 		restoreCut();
 	}
+});
+
+// ---- Tool-call audit hooks (src/toolcall-audit.ts) --------------------------
+//
+// The pipe owns the per-turn audit: observe() receives every forwarded SSE
+// block that carries a tool call (cloaked and byte-identical bypassed streams
+// alike), repair() receives the cloak's wire rewrites, and finish() fires once
+// per turn. These tests drive a plain capturing sink — never the real
+// recorder, which would write a JSONL file.
+
+interface StreamedToolCall {
+	index?: number;
+	id?: string;
+	function?: { name?: string; arguments?: string };
+}
+
+interface ChatFrame {
+	choices?: Array<{ index?: number; delta?: { tool_calls?: StreamedToolCall[] } }>;
+}
+
+interface AuditStub {
+	readonly audit: ToolcallStreamAudit;
+	readonly observed: string[];
+	readonly repairs: Array<{ kind: string; detail?: string }>;
+	readonly finishes: Array<{ finishReason?: string | null; terminal?: boolean }>;
+	refireSkips(): number;
+}
+
+function createAuditStub(): AuditStub {
+	const observed: string[] = [];
+	const repairs: Array<{ kind: string; detail?: string }> = [];
+	const finishes: Array<{ finishReason?: string | null; terminal?: boolean }> =
+		[];
+	let skips = 0;
+	const audit: ToolcallStreamAudit = {
+		observe(text: string): void {
+			observed.push(text);
+		},
+		repair(kind: string, detail?: string): void {
+			repairs.push(detail === undefined ? { kind } : { kind, detail });
+		},
+		refireSkipped(): void {
+			skips++;
+		},
+		finish(info?: { finishReason?: string | null; terminal?: boolean }): void {
+			finishes.push(info === undefined ? {} : { ...info });
+		},
+	};
+	return { audit, observed, repairs, finishes, refireSkips: () => skips };
+}
+
+/** Same pipe as `pipe`, with a streaming cloak (wire rewrites) in front. */
+function pipeCloaked(
+	stream: PassThrough,
+	reqUrl: string,
+	relayUrl: string | undefined,
+	cloak: StreamCloakOptions,
+	opts?: StreamPipeOptions,
+): { res: FakeResponse; req: FakeRequest } {
+	const res = new FakeResponse();
+	const req = new FakeRequest(reqUrl);
+	pipeUpstreamStream(
+		stream,
+		res as unknown as http.ServerResponse,
+		req as unknown as http.IncomingMessage,
+		"test",
+		relayUrl,
+		cloak,
+		opts,
+	);
+	return { res, req };
+}
+
+const chatToolDelta = (toolCalls: unknown[]): string =>
+	`data: ${JSON.stringify({ choices: [{ index: 0, delta: { tool_calls: toolCalls } }] })}`;
+
+const chatFinishDelta = (): string =>
+	`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] })}`;
+
+/** One tool_call riding a streamed chat delta (upstream index 0, as free models send). */
+const toolCallFrame = (
+	id: string,
+	fn: { name?: string; arguments?: string },
+): Record<string, unknown> => ({ index: 0, id, type: "function", function: fn });
+
+const chatFrames = (body: string): ChatFrame[] =>
+	body
+		.split("\n\n")
+		.filter((block) => block.startsWith("data: ") && !block.includes("[DONE]"))
+		.map((block) => JSON.parse(block.slice("data: ".length)) as ChatFrame);
+
+test("audit: parallel index collision + restated name are reported, wire stays well-formed", async () => {
+	resetAllRelayHealth();
+	const todoSchema = {
+		type: "object",
+		properties: {
+			list: {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						phase: { type: "string" },
+						items: { type: "array", items: { type: "string" } },
+					},
+					required: ["phase", "items"],
+				},
+			},
+		},
+		required: ["list"],
+	};
+	const cloak: StreamCloakOptions = {
+		callerHadTools: true,
+		caseRestore: {},
+		findGlob: { renamedFindToGlob: false },
+		injected: [],
+		argSchemas: new Map([["todo", todoSchema]]),
+		pathname: "/v1/chat/completions",
+	};
+	const firstArgs = '{"list":[{"phase":"R","items":["a"]}]}';
+	const secondArgs = '{"list":[{"phase":"S","items":["b"]}]}';
+	// Free-model shape: two parallel calls both labelled upstream index 0 with
+	// distinct ids, each announced by a name-only frame and then restated —
+	// name AND arguments — on a second frame.
+	const sse = [
+		chatToolDelta([toolCallFrame("call_a", { name: "todo" })]),
+		chatToolDelta([toolCallFrame("call_b", { name: "todo" })]),
+		chatToolDelta([
+			toolCallFrame("call_a", { name: "todo", arguments: firstArgs }),
+		]),
+		chatToolDelta([
+			toolCallFrame("call_b", { name: "todo", arguments: secondArgs }),
+		]),
+		chatFinishDelta(),
+		"data: [DONE]",
+	].join("\n\n");
+	const stub = createAuditStub();
+	const stream = new PassThrough();
+	const { res } = pipeCloaked(
+		stream,
+		"/v1/chat/completions",
+		RELAY_URL,
+		cloak,
+		{ audit: stub.audit },
+	);
+	// Register before ending: `close` trails `end` on a later tick, and the
+	// single-finish assertion needs both lifecycle passes to have run.
+	const closed = once(stream, "close");
+	stream.push(Buffer.from(`${sse}\n\n`, "utf8"));
+	stream.end();
+	await once(res, "done");
+	await closed;
+
+	// Wire contract unchanged: the collider is re-homed, the restated frames
+	// are dropped, and the terminal flush carries both calls whole.
+	const deltas = chatFrames(res.body()).flatMap(
+		(frame) => frame.choices?.[0]?.delta?.tool_calls ?? [],
+	);
+	assert.deepEqual(
+		deltas
+			.filter(
+				(c) => typeof c.id === "string" && c.function?.arguments === undefined,
+			)
+			.map((c) => [c.id, c.index]),
+		[
+			["call_a", 0],
+			["call_b", 1],
+		],
+		"one name delta per call, the colliding call re-homed to the next host index",
+	);
+	const flushed = deltas.filter(
+		(c) => typeof c.function?.arguments === "string",
+	);
+	assert.deepEqual(
+		flushed.map((c) => [c.index, c.function?.name]),
+		[
+			[0, "todo"],
+			[1, "todo"],
+		],
+		"both calls flush whole at distinct indices with an intact name",
+	);
+	assert.deepEqual(
+		flushed.map((c) => JSON.parse(c.function!.arguments!) as unknown),
+		[
+			{ list: [{ phase: "R", items: ["a"] }] },
+			{ list: [{ phase: "S", items: ["b"] }] },
+		],
+		"each call keeps its own arguments",
+	);
+	assert.ok(
+		!res.body().includes("todotodo"),
+		"the restated name is never glued onto the copy the host already holds",
+	);
+
+	assert.equal(
+		stub.observed.length,
+		3,
+		"observe gets the two name frames and the terminal flush; the dropped restatement frames were never forwarded",
+	);
+	assert.ok(
+		stub.observed.every((text) => text.includes('"tool_calls"')),
+		"only tool-bearing blocks are observed",
+	);
+
+	const kinds = stub.repairs.map((repair) => repair.kind);
+	assert.deepEqual(
+		stub.repairs.find((repair) => repair.kind === "parallel-index-collision"),
+		{ kind: "parallel-index-collision", detail: "idx:0" },
+		"the index rewrite is reported with the upstream index",
+	);
+	assert.deepEqual(
+		stub.repairs
+			.filter((repair) => repair.kind === "name-restated")
+			.map((repair) => repair.detail),
+		["todo", "todo"],
+		"each call's dropped name restatement is reported",
+	);
+	assert.ok(
+		kinds.includes("arguments-buffered"),
+		"withheld argument fragments are reported",
+	);
+	assert.ok(
+		!kinds.includes("arguments-repaired"),
+		"well-formed arguments are not misreported as repaired",
+	);
+
+	assert.deepEqual(
+		stub.finishes,
+		[{ terminal: true }],
+		"finish reports the forwarded terminal exactly once (end and close)",
+	);
+	assert.equal(stub.refireSkips(), 0, "a completed turn spends no refire budget");
+});
+
+test("audit: a truncated tool-call turn reports the skipped refire and never calls the hook", async () => {
+	resetAllRelayHealth();
+	const stub = createAuditStub();
+	let refireCalls = 0;
+	const stream = new PassThrough();
+	// No cloak: the byte-identical bypassed stream must be audited too.
+	const { res } = pipe(stream, "/v1/chat/completions", RELAY_URL, {
+		audit: stub.audit,
+		refire: async () => {
+			refireCalls++;
+			return null;
+		},
+	});
+	stream.push(
+		Buffer.from(
+			`${chatToolDelta([
+				toolCallFrame("call_a", { name: "todo", arguments: '{"list":[]}' }),
+			])}\n\n`,
+			"utf8",
+		),
+	);
+	const closed = once(stream, "close");
+	stream.end();
+	await once(res, "done");
+	await closed;
+
+	assert.equal(
+		refireCalls,
+		0,
+		"a turn that already forwarded a tool call is never regenerated",
+	);
+	assert.equal(stub.refireSkips(), 1, "the veto is reported");
+	assert.deepEqual(
+		stub.finishes,
+		[{ terminal: true }],
+		"the synthetic [DONE] keeps the host contract terminal",
+	);
+	assert.equal(
+		stub.observed.length,
+		1,
+		"a bypassed (byte-identical) stream is observed as well",
+	);
+	assert.ok(stub.observed[0].includes('"tool_calls"'));
+});
+
+test("audit: messages argument fragments are observed on both the bypassed and cloaked paths", async () => {
+	resetAllRelayHealth();
+	const todoSchema = {
+		type: "object",
+		properties: {
+			list: {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						phase: { type: "string" },
+						items: { type: "array", items: { type: "string" } },
+					},
+					required: ["phase", "items"],
+				},
+			},
+		},
+		required: ["list"],
+	};
+	// Upstream shape the schema promotion repairs (phases parked on an object).
+	const malformed = JSON.stringify({ list: { item: [{ phase: "R", items: ["a"] }] } });
+	const sse = [
+		`data: ${JSON.stringify({ type: "message_start", message: { id: "msg_1", model: "m" } })}`,
+		`data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "tu_1", name: "todo" } })}`,
+		`data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: malformed } })}`,
+		`data: ${JSON.stringify({ type: "content_block_stop", index: 0 })}`,
+		`data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" } })}`,
+	].join("\n\n");
+
+	// 1. Bypassed stream (no cloak): the argument fragments themselves flow, and
+	// they carry no tool_use marker — the audit gate must still hand them over.
+	const bypassStub = createAuditStub();
+	const bypassStream = new PassThrough();
+	const bypass = pipe(bypassStream, "/v1/messages", RELAY_URL, {
+		audit: bypassStub.audit,
+	});
+	const bypassClosed = once(bypassStream, "close");
+	bypassStream.push(Buffer.from(`${sse}\n\n`, "utf8"));
+	bypassStream.end();
+	await once(bypass.res, "done");
+	await bypassClosed;
+	assert.equal(
+		bypassStub.observed.length,
+		3,
+		"the tool_use start, its input_json_delta fragment, and the populated stop_reason turn-end block are observed",
+	);
+	assert.ok(bypassStub.observed.some((text) => text.includes('"input_json_delta"')));
+	assert.ok(
+		bypassStub.observed.some((text) => text.includes('"stop_reason":"tool_use"')),
+		"the turn-end marker reaches the audit so the finish reason is recorded",
+	);
+	assert.deepEqual(bypassStub.finishes, [{ terminal: true }]);
+
+	// 2. Cloaked stream: the fragment is withheld and re-emitted whole+repaired
+	// by the synthesized `content_block_delta`, which must be observed as well.
+	const cloakStub = createAuditStub();
+	const cloak: StreamCloakOptions = {
+		callerHadTools: true,
+		caseRestore: {},
+		findGlob: { renamedFindToGlob: false },
+		injected: [],
+		argSchemas: new Map([["todo", todoSchema]]),
+		pathname: "/v1/messages",
+	};
+	const cloakStream = new PassThrough();
+	const cloaked = pipeCloaked(cloakStream, "/v1/messages", RELAY_URL, cloak, {
+		audit: cloakStub.audit,
+	});
+	const cloakClosed = once(cloakStream, "close");
+	cloakStream.push(Buffer.from(`${sse}\n\n`, "utf8"));
+	cloakStream.end();
+	await once(cloaked.res, "done");
+	await cloakClosed;
+
+	const observedFlush = cloakStub.observed.find((text) =>
+		text.includes('"input_json_delta"'),
+	);
+	assert.ok(observedFlush, "the synthesized repaired-arguments block is observed");
+	assert.ok(
+		observedFlush!.includes('"phase"') || observedFlush!.includes('\\"phase\\"'),
+		"the observed block carries the repaired payload",
+	);
+	const kinds = cloakStub.repairs.map((repair) => repair.kind);
+	assert.ok(kinds.includes("arguments-buffered"), "withheld fragments are reported");
+	assert.ok(kinds.includes("arguments-repaired"), "the actual repair is reported");
+	assert.deepEqual(cloakStub.finishes, [{ terminal: true }]);
 });

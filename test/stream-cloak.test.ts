@@ -630,3 +630,64 @@ test("chat stream: caller-owned same-name call survives with restored casing", a
   "the frame carries the repaired (envelope-unwrapped) arguments",
  );
 });
+
+test("chat stream: a restated full name on the arguments frame reaches the host once", async () => {
+ // OpenCode Zen streams one call as a name-only frame followed by a frame
+ // restating the whole name WITH the arguments (observed live 2026-10-22).
+ // Hosts concatenate streamed name deltas, so forwarding the second copy hands
+ // them `get_weatherget_weather` — a name no declared tool matches. The repeat
+ // header is authoritative: it replaces the accumulated name and stays off the
+ // wire when the host already holds it.
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: { get_weather: "Get_Weather" },
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  pathname: "/v1/chat/completions",
+ };
+ const sse = [
+  chatDelta([chatToolCall("call_w", { name: "get_weather" })]),
+  chatDelta([chatToolCall("call_w", { name: "get_weather", arguments: '{"city":"Tokyo"}' })]),
+  finishDelta(),
+ ].join("\n\n");
+ const body = await runStreamed(sse, "/v1/chat/completions", cloak, thirds(sse));
+
+ const deltas = dataFrames(body).flatMap((frame) => frame.choices?.[0]?.delta?.tool_calls ?? []);
+ assert.deepEqual(
+  deltas.filter((c) => typeof c.function?.name === "string").map((c) => c.function.name),
+  ["Get_Weather"],
+  "the name is emitted exactly once, restored to the caller's casing",
+ );
+ assert.deepEqual(
+  deltas.filter((c) => typeof c.function?.arguments === "string").map((c) => c.function.arguments),
+  ['{"city":"Tokyo"}'],
+  "the arguments still flow, on their own frame",
+ );
+ assert.ok(!body.includes("get_weatherget_weather"), "the doubled name never reaches the host");
+});
+
+test("chat stream: a name split across deltas reassembles into the flushed call", async () => {
+ // The piecewise shape must keep appending: replacing on every name delta
+ // would leave the flushed call named after its last fragment only.
+ const weatherSchema = { type: "object", properties: { city: { type: "string" } }, required: ["city"] };
+ const cloak: StreamCloakOptions = {
+  callerHadTools: true,
+  caseRestore: {},
+  findGlob: { renamedFindToGlob: false },
+  injected: [],
+  argSchemas: new Map([["get_weather", weatherSchema]]),
+  pathname: "/v1/chat/completions",
+ };
+ const sse = [
+  chatDelta([chatToolCall("call_w", { name: "get_" })]),
+  chatDelta([chatToolCall("call_w", { name: "weather" })]),
+  chatDelta([chatToolCall("call_w", { arguments: '{"city":"Tokyo"}' })]),
+  finishDelta(),
+ ].join("\n\n");
+ const body = await runStreamed(sse, "/v1/chat/completions", cloak, thirds(sse));
+
+ const flushed = flushedChatCalls(body);
+ assert.equal(flushed.length, 1, "one call flushes");
+ assert.equal(flushed[0].function.name, "get_weather", "name fragments append, so the flush carries the whole name");
+ assert.deepEqual(JSON.parse(flushed[0].function.arguments), { city: "Tokyo" });
+});

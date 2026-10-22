@@ -450,6 +450,19 @@ export function resolveUpstreamHealthPath(): string {
  }
 }
 
+/** JSONL audit of tool-call turns that failed or needed repair (src/toolcall-audit.ts). */
+export function resolveToolcallAuditPath(): string {
+ try {
+  return dataFilePath("toolcall-audit.jsonl");
+ } catch {
+  return path.join(
+   path.dirname(fileURLToPath(import.meta.url)),
+   "..",
+   ".toolcall-audit.jsonl",
+  );
+ }
+}
+
 export function resolveSessionPinPath(): string {
  try {
   return dataFilePath("pi-freeflow-session-pins.json");

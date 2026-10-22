@@ -224,19 +224,22 @@ test("E2E [5/10] ensureDaemon seamlessly rebinds when active daemon process is t
 
 test("E2E [6/10] model catalog accurately maps thinking formats and source routing", () => {
  // Canonical resolution
- assert.equal(resolveCanonicalModelId("cline-free/muse-spark-1.3-contributor"), "cline-free/muse-spark-1.3-contributor");
+ assert.equal(resolveCanonicalModelId("z-ai/glm-5.3-flash"), "z-ai/glm-5.3-flash");
 	assert.equal(resolveCanonicalModelId("beam-free"), "beam-free");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash-free"), "mimo-v2.6-flash-free");
 
  // Kilo models identification
  assert.equal(isKiloModel("dots-3-note-preview"), true);
- assert.equal(isKiloModel("cline-free/muse-spark-1.3-contributor"), false);
+ assert.equal(isKiloModel("z-ai/glm-5.3-flash"), false);
 
- // ProviderConfig format verification
+ // ProviderConfig format verification. The catalog carries no
+ // `openai-responses` entry since Cline's Muse Spark 1.3 retired (2026-10-22),
+ // so the responses compat mapping is locked with a synthetic model — every
+ // flavor stays supported for hosts and stale registrations.
  const sampleCatalog: RegisteredModel[] = [
   {
-   id: "cline-free/muse-spark-1.3-contributor",
-   name: "Muse Spark",
+   id: "flavor-fixture-responses",
+   name: "Flavor Fixture Responses",
    api: "openai-responses",
    contextWindow: 128000,
    maxTokens: 4096,
@@ -263,10 +266,10 @@ test("E2E [6/10] model catalog accurately maps thinking formats and source routi
  const cfg = buildProviderConfig(sampleCatalog, 28180);
  assert.equal(cfg.baseUrl, "http://127.0.0.1:28180/v1");
 
- // Muse spark gets openai-responses session format
- const museModel = cfg.models.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
- assert.ok(museModel);
- assert.equal(museModel?.compat?.sessionAffinityFormat, "openai-nosession");
+ // The responses flavor gets the openai-nosession affinity
+ const responsesModel = cfg.models.find((m) => m.id === "flavor-fixture-responses");
+ assert.ok(responsesModel);
+ assert.equal(responsesModel?.compat?.sessionAffinityFormat, "openai-nosession");
 
  // Kilo models disable developer role & reasoning effort
  const kiloModel = cfg.models.find((m) => m.id === "dots-studio/dots-3-note-preview:free");

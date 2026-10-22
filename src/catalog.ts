@@ -45,12 +45,11 @@ import type {
  * - mimo-v2.5-free: decommissioned upstream (2026-10-07) — HTTP 401 "Model mimo-v2.5-free is not supported".
  *   Re-probed 2026-10-16: 410 "Model mimo-v2.5-free has been deprecated. Use
  *   mimo-v2.6-flash-free instead." The docs still list it as free; they are stale.
- * - exo-free: dead-listed 2026-10-09 (410 "Model exo-free has been deprecated")
- *   but revived upstream on 2026-10-16 — back on the official free lineup and
- *   answering live through the proxy (chat 200 with tools, stream, reasoning,
- *   vision; dual-canary recall at ~520K tokens; a 1.2M-word prompt draws the
- *   empty-bodied 400). Re-registered statically the same day: do NOT add this
- *   id back to this set unless it dies again.
+ * - exo-free: dead-listed 2026-10-09 (410 "Model exo-free has been deprecated"),
+ *   revived upstream on 2026-10-16, and dead again on 2026-10-22: the endpoint
+ *   answers 410 "Model exo-free has been deprecated" on every path through the
+ *   relay pool and the id is absent from the live Zen listing. Permanently
+ *   dead-listed so no disk cache or upstream merge can put it back.
  * - fledge-alpha-free: withdrawn upstream (2026-10-09) — absent from the live
  *   Zen list, chat 401 "Model fledge-alpha-free is not supported".
  * - inclusionai/ling-3.0-flash-sante:free: demoted to paid on Kilo (2026-10-09) —
@@ -75,10 +74,10 @@ import type {
  *   retired upstream (2026-10-13) — probed live twice each against the real
  *   Cline pool, every attempt answered HTTP 404 `{"error":"model not found",
  *   "success":false,"hint":"Cline has no such model. Refresh the model list and
- *   retry."}`, while the two Cline models that survive (cline-free/
- *   muse-spark-1.3-contributor and z-ai/glm-5.3-flash) answered 200 with the
- *   same account and request shape. The lane is healthy; these three ids are
- *   gone, so they must never re-enter the picker from disk cache or an
+ *   retry."}`, while the sibling `z-ai/glm-5.3-flash` (and, until its own
+ *   retirement below, `cline-free/muse-spark-1.3-contributor`) answered 200
+ *   with the same account and request shape. The lane is healthy; these three
+ *   ids are gone, so they must never re-enter the picker from disk cache or an
  *   upstream merge.
  */
 export const DEAD_MODEL_IDS = new Set<string>([
@@ -136,8 +135,17 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // muse-spark-1.2-contributor-free: decommissioned upstream (2026-10-18) — answers
  // HTTP 410 "Model muse-spark-1.2-contributor-free has been deprecated" while the
  // same request shape on the surviving Zen models answers 200. Retired from the
- // static catalog the same day; the Cline Muse Spark 1.3 entry is unaffected.
+ // static catalog the same day.
  "muse-spark-1.2-contributor-free",
+ // cline-free/muse-spark-1.3-contributor: gone from Cline's model inventory
+ // (2026-10-22) — three live probes through the real pool, spaced over ~10
+ // minutes, each answered HTTP 404 `{"error":"model not found",
+ // "success":false,"hint":"Cline has no such model. Refresh the model list and
+ // retry."}`, while `z-ai/glm-5.3-flash` resolved on the same account (its 402
+ // insufficient_credits is raised after model resolution). The id was the last
+ // entry declaring `api: "openai-responses"`; it stays retired so a stale disk
+ // cache cannot put it back in the picker.
+ "cline-free/muse-spark-1.3-contributor",
  // nvidia/nemotron-3-super-120b-a12b:free: dead route (2026-10-21) — Kilo answers
  // 404 "Function '<uuid>': Not found for account ..." from its Nvidia provider on
  // every attempt, from two independent egress IPs, while sibling Nvidia ids answer
@@ -147,6 +155,10 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // HTTP 404 "The requested model is currently unavailable" (unavailable_model) on
  // every attempt, from two independent egress IPs; it is no longer served.
  "thinkingmachines/inkling-small:free",
+ // exo-free: re-deprecated upstream (2026-10-22) — 410 ModelDeprecated on every
+ // path and gone from the live Zen listing, four days after it was re-registered
+ // from a 2026-10-16 revival. Permanently dead-listed.
+ "exo-free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.
@@ -163,10 +175,10 @@ export function isFreeCatalogId(id: string): boolean {
 /**
  * Purge paid/dead entries from a catalog list and repair known models against
  * the static definitions. Stale disk caches predate the paid filter and the
- * muse-spark-1.3 responses-api entry, so loading them verbatim replays a wrong
- * api (chat/completions for a responses-only model -> upstream 500) until the
- * 24h TTL expires. Repairing here self-heals on the next refresh without a
- * reinstall.
+ * responses-api entries (the last one, Cline's Muse Spark 1.3, retired on
+ * 2026-10-22), so loading them verbatim replays a wrong api (chat/completions
+ * for a responses-only model -> upstream 500) until the 24h TTL expires.
+ * Repairing here self-heals on the next refresh without a reinstall.
  */
 export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredModel[] {
  const out: RegisteredModel[] = [];
@@ -186,7 +198,7 @@ export function sanitizeCatalogModels(models: RegisteredModel[]): RegisteredMode
 }
 /**
  * In-memory cache of currently active/available free models.
- * Initialized with all 32 verified models for 0ms instant availability.
+ * Initialized with all 37 verified models for 0ms instant availability.
  */
 let aliveCatalog: RegisteredModel[] = ALL_MODELS.map((m) => ({
  ...m,
@@ -305,11 +317,11 @@ export function enrichModelDef(raw: RawModelItem, source: Upstream): RegisteredM
   maxTokens = 131_072;
  }
 
- // Muse Spark is served on the responses API upstream (the Cline entry still
- // declares it; the Zen 1.2/1.3 contributor ids were retired upstream). Every
- // known id short-circuits above, so this only decides for ids Zen lists
- // dynamically — matching the family keeps a future muse-spark id off the chat
- // endpoint it would 500 on.
+ // Muse Spark was served on the responses API upstream: the Cline entry
+ // declared it until 2026-10-22, and the Zen 1.2/1.3 contributor ids retired
+ // before that. Every known id short-circuits above, so this only decides for
+ // ids Zen lists dynamically — matching the family keeps a future muse-spark
+ // id off the chat endpoint it would 500 on.
  const isResponses = idLower.includes("muse-spark");
 
  return {

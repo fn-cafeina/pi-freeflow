@@ -82,6 +82,7 @@ import {
  isReasoningCallerMismatch,
 } from "./responses.ts";
 import { pipeUpstreamStream, type StreamCloakOptions } from "./stream-pipe.ts";
+import { createToolcallRecorder, type ToolcallRecorder, type ToolcallWire } from "./toolcall-audit.ts";
 import {
  decideZenRoute,
  isFreeTierGate,
@@ -251,6 +252,113 @@ async function clineRefreshImpl(refreshToken: string): Promise<{ token: string; 
 }
 
 /**
+ * Bound on the caller tool names the audit summary carries (the recorder
+ * applies the same caps itself; bounding here keeps a hostile body from
+ * building a large array first).
+ */
+const AUDIT_MAX_DECLARED = 32;
+const AUDIT_MAX_NAME = 64;
+
+/**
+ * Caller-declared tool names from a request body, in all three wire shapes:
+ * chat `{type:"function",function:{name}}`, responses `{type:"function",name}`
+ * and messages `{name}`. Names only — the audit never records schemas.
+ */
+function declaredToolNames(body: Record<string, unknown>): string[] {
+ const names: string[] = [];
+ const tools = body.tools;
+ if (!Array.isArray(tools)) return names;
+ for (const raw of tools) {
+  if (names.length >= AUDIT_MAX_DECLARED) break;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) continue;
+  const rec = raw as Record<string, unknown>;
+  const fn = rec.function;
+  const fnRec = fn !== null && typeof fn === "object" && !Array.isArray(fn)
+   ? (fn as Record<string, unknown>)
+   : null;
+  const rawName = typeof fnRec?.name === "string" ? fnRec.name : rec.name;
+  if (typeof rawName !== "string" || rawName === "") continue;
+  const name = rawName.length > AUDIT_MAX_NAME ? rawName.slice(0, AUDIT_MAX_NAME) : rawName;
+  if (!names.includes(name)) names.push(name);
+ }
+ return names;
+}
+
+/** Audit wire of a request path: the body shape upstream is asked for. */
+function auditWireFor(pathname: string): ToolcallWire {
+ if (pathname.endsWith("/responses")) return "responses";
+ if (pathname.endsWith("/messages")) return "messages";
+ return "chat";
+}
+
+/**
+ * Classify an already-assembled chat completion for the audit (non-stream
+ * path). Never throws: the audit is best-effort and must stay off the request
+ * path. A body without `choices` records a tool-less turn, which is exactly
+ * what the caller received.
+ */
+function auditChatCompletion(audit: ToolcallRecorder | undefined, completion: unknown): void {
+ if (audit === undefined || !audit.active) return;
+ try {
+  const parsed = completion !== null && typeof completion === "object" && !Array.isArray(completion)
+   ? (completion as Record<string, unknown>)
+   : {};
+  const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+  const first = choices.length > 0 && choices[0] !== null && typeof choices[0] === "object" && !Array.isArray(choices[0])
+   ? (choices[0] as Record<string, unknown>)
+   : undefined;
+  const message = first !== undefined && first.message !== null && typeof first.message === "object" && !Array.isArray(first.message)
+   ? (first.message as Record<string, unknown>)
+   : {};
+  const finishReason = typeof first?.finish_reason === "string" ? (first.finish_reason as string) : null;
+  audit.finishFromChat(message, finishReason);
+ } catch {
+  // Unreadable body: nothing to record.
+ }
+}
+
+/** `auditChatCompletion` over serialized JSON (the aggregated non-stream body). */
+function auditChatBody(audit: ToolcallRecorder | undefined, json: string): void {
+ if (audit === undefined || !audit.active) return;
+ try {
+  auditChatCompletion(audit, JSON.parse(json));
+ } catch {
+  // Not JSON: nothing to record.
+ }
+}
+
+/**
+ * Classify a non-stream turn of a Responses/Anthropic wire: the recorder reads
+ * the raw SSE text itself. A body that carried no SSE frames is left
+ * unrecorded rather than guessed as a tool-less turn — the recorder has no
+ * reader for a plain object of those wires.
+ */
+function auditSseBody(audit: ToolcallRecorder | undefined, text: string): void {
+ if (audit === undefined || !audit.active) return;
+ if (!text.includes("data:")) return;
+ try {
+  audit.observe(text);
+  audit.finish();
+ } catch {
+  // Best-effort by contract.
+ }
+}
+
+/**
+ * Non-stream final classification: a chat-wire body parses directly; the
+ * responses/messages wires are classified from the raw upstream SSE text.
+ */
+function auditFinalBody(
+ audit: ToolcallRecorder | undefined,
+ pathname: string,
+ rawUpstream: string,
+ served: string,
+): void {
+ if (auditWireFor(pathname) === "chat") auditChatBody(audit, served);
+ else auditSseBody(audit, rawUpstream);
+}
+
+/**
  * Serve a Cline-model request direct (never relay pool, no opencode
  * fingerprint). Cline serves chat completions only: responses-path bodies
  * translate to chat upstream and the chat answer translates back, re-emitted
@@ -264,8 +372,9 @@ async function handleClineRequest(opts: {
  res: http.ServerResponse;
  reqId: string;
  clientRequestedStream: boolean;
+ audit?: ToolcallRecorder;
 }): Promise<void> {
- const { parsedBody, pathname, req, res, reqId, clientRequestedStream } = opts;
+ const { parsedBody, pathname, req, res, reqId, clientRequestedStream, audit } = opts;
  const responsesRequest = pathname.endsWith("/responses");
  const model = typeof parsedBody.model === "string" ? parsedBody.model : "unknown";
  let chatBody: Record<string, unknown>;
@@ -332,6 +441,9 @@ async function handleClineRequest(opts: {
  }
  if (!upstreamRes.ok) {
   log("warn", `cline upstream ${upstreamRes.status} for model ${model}`, { status: upstreamRes.status, model }, reqId);
+  // A tools request rejected upstream (e.g. a tool-schema 400) is the verdict
+  // the host will see; record it so the audit names the cause.
+  audit?.attemptFailure({ attempt: 0, status: upstreamRes.status, reason: "final-upstream-status" });
   const raw = await upstreamRes.text().catch(() => null);
   if (raw === null) {
    log("error", "cline upstream body unreadable", { status: upstreamRes.status, model }, reqId);
@@ -368,7 +480,7 @@ async function handleClineRequest(opts: {
    findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
     ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
     : undefined,
-   { upstreamContentType: upstreamRes.headers.get("content-type") },
+   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
   );
   return;
  }
@@ -385,6 +497,7 @@ async function handleClineRequest(opts: {
  }
  if (!responsesRequest) {
  const data = convertSseToJson(sseText, pathname, true, undefined, findGlob, undefined, argSchemas);
+  auditChatBody(audit, data);
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": "application/json" });
    res.end(data);
@@ -394,6 +507,9 @@ async function handleClineRequest(opts: {
   return;
  }
  const chat = sseToChatCompletionJson(sseText, true, undefined, findGlob, undefined, argSchemas);
+ // Classify the chat object before it is mapped: finishFromChat reads the
+ // assistant message the model actually produced.
+ auditChatCompletion(audit, chat);
  const resp = chatResponsesJsonFromChatCompletion(chat, model);
  if (clientRequestedStream) {
   if (!res.headersSent) {
@@ -412,6 +528,133 @@ async function handleClineRequest(opts: {
  if (!res.headersSent) {
   res.writeHead(200, { "content-type": "application/json" });
   res.end(JSON.stringify(resp));
+ } else if (!res.writableEnded) {
+  res.end();
+ }
+}
+
+// ── OVH lane quirks ───────────────────────────────────────────────────
+// Two catalog models have upstream-side quirks this lane must absorb. Both
+// checks key off the canonical catalog id, never the wire id: the wire id has
+// already lost its `ovh-free/` prefix, and a short alias (`qwen3.8-27b`,
+// `mistral-small-3.2`) must resolve to the same model.
+
+/** Qwen3.8-27B on OVH: `reasoning_effort` starves the model into an empty turn. */
+const OVH_NO_EFFORT_MODEL = "ovh-free/Qwen3.8-27B";
+/** Mistral Small 3.2 on OVH: replayed tool-call ids must be 9 alphanumerics. */
+const OVH_STRICT_TOOL_CALL_ID_MODEL = "ovh-free/Mistral-Small-3.2-24B-Instruct-2506";
+const OVH_TOOL_CALL_ID_RE = /^[A-Za-z0-9]{9}$/;
+
+/**
+ * Rewrite the non-conforming tool-call ids in a chat body's messages.
+ *
+ * Upstream validates every replayed id against "a-z, A-Z, 0-9, length 9" and
+ * drops the whole turn otherwise: a 400 `Tool call id was ll_loop_1 but must be
+ * a-z, A-Z, 0-9, with a length of 9` for a non-streamed call, and the same
+ * rejection as a silent `data: [DONE]`-only 200 when streaming (measured
+ * 2026-10-22). Upstream mints conforming ids itself (observed `hCCedplH4`), so
+ * only host-supplied history needs fixing. Replacements are deterministic
+ * (`t` + 8-character zero-padded base36 of the request-local sequence) and the
+ * same map is applied to the matching `role:"tool"` message, so the pair a host
+ * replays next turn stays equal. Conforming ids pass through untouched.
+ */
+function normalizeOvhToolCallIds(messages: unknown): void {
+ if (!Array.isArray(messages)) return;
+ const taken = new Set<string>();
+ const broken: string[] = [];
+ const note = (id: unknown): void => {
+  if (typeof id !== "string" || id.length === 0) return;
+  if (OVH_TOOL_CALL_ID_RE.test(id)) taken.add(id);
+  else if (!broken.includes(id)) broken.push(id);
+ };
+ for (const message of messages) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) continue;
+  const rec = message as Record<string, unknown>;
+  if (Array.isArray(rec.tool_calls)) {
+   for (const call of rec.tool_calls) {
+    if (call !== null && typeof call === "object" && !Array.isArray(call)) note((call as Record<string, unknown>).id);
+   }
+  }
+  if (rec.role === "tool") note(rec.tool_call_id);
+ }
+ if (broken.length === 0) return;
+ const remap = new Map<string, string>();
+ let seq = 0;
+ for (const id of broken) {
+  let next = `t${seq.toString(36).padStart(8, "0")}`;
+  while (taken.has(next)) {
+   seq += 1;
+   next = `t${seq.toString(36).padStart(8, "0")}`;
+  }
+  seq += 1;
+  taken.add(next);
+  remap.set(id, next);
+ }
+ for (const message of messages) {
+  if (message === null || typeof message !== "object" || Array.isArray(message)) continue;
+  const rec = message as Record<string, unknown>;
+  if (Array.isArray(rec.tool_calls)) {
+   for (const call of rec.tool_calls) {
+    if (call === null || typeof call !== "object" || Array.isArray(call)) continue;
+    const callRec = call as Record<string, unknown>;
+    const next = remap.get(callRec.id as string);
+    if (next !== undefined) callRec.id = next;
+   }
+  }
+  if (rec.role === "tool") {
+   const next = remap.get(rec.tool_call_id as string);
+   if (next !== undefined) rec.tool_call_id = next;
+  }
+ }
+}
+
+/**
+ * True when an aggregated chat answer carries neither assistant text nor a
+ * tool call — the exact shape OVH produces when it starves a request (Qwen
+ * with a `reasoning_effort` field, Mistral with a malformed replayed tool-call
+ * id) and closes the stream after a bare `data: [DONE]`. Aggregating that
+ * yields `content: null, finish_reason: "stop"`, which the host reads as a
+ * finished empty turn; the lane must surface it instead of fabricating it.
+ */
+function ovhAnswerIsEmpty(chat: Record<string, unknown>): boolean {
+ const choices = Array.isArray(chat.choices) ? chat.choices : [];
+ const first = choices.length > 0 && choices[0] !== null && typeof choices[0] === "object" && !Array.isArray(choices[0])
+  ? choices[0] as Record<string, unknown>
+  : undefined;
+ const message = first !== undefined && first.message !== null && typeof first.message === "object" && !Array.isArray(first.message)
+  ? first.message as Record<string, unknown>
+  : undefined;
+ if (message === undefined) return true;
+ if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) return false;
+ const content = message.content;
+ if (typeof content === "string") return content.length === 0;
+ if (Array.isArray(content)) return content.length === 0;
+ return true;
+}
+
+/** `ovhAnswerIsEmpty` over the JSON text `convertSseToJson` serialized. */
+function ovhAggregateIsEmpty(data: string): boolean {
+ let parsed: unknown;
+ try {
+  parsed = JSON.parse(data);
+ } catch {
+  return false;
+ }
+ if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+ return ovhAnswerIsEmpty(parsed as Record<string, unknown>);
+}
+
+/**
+ * Answer an empty upstream stream as an error. Never emit the aggregated
+ * `chatcmpl-freeflow` shell for it: that is a fabricated 200 completion with
+ * `content: null` and `finish_reason: "stop"`, the very thing that hid these
+ * upstream failures from the host.
+ */
+function respondOvhEmptyStream(res: http.ServerResponse, reqId: string, model: string): void {
+ log("warn", `ovh upstream returned an empty stream for model ${model}`, { model }, reqId);
+ if (!res.headersSent) {
+  res.writeHead(502, { "content-type": "application/json" });
+  res.end(JSON.stringify({ error: "upstream error", detail: "upstream returned an empty stream" }));
  } else if (!res.writableEnded) {
   res.end();
  }
@@ -436,8 +679,9 @@ async function handleOvhRequest(opts: {
  res: http.ServerResponse;
  reqId: string;
  clientRequestedStream: boolean;
+ audit?: ToolcallRecorder;
 }): Promise<void> {
- const { parsedBody, pathname, req, res, reqId, clientRequestedStream } = opts;
+ const { parsedBody, pathname, req, res, reqId, clientRequestedStream, audit } = opts;
  const responsesRequest = pathname.endsWith("/responses");
  const requestedModel = typeof parsedBody.model === "string" ? parsedBody.model : "unknown";
  let chatBody: Record<string, unknown>;
@@ -452,6 +696,25 @@ async function handleOvhRequest(opts: {
  // (`llama-3.3-70b`) must resolve to `ovh-free/Meta-Llama-3_3-70B-Instruct`
  // first, or it reaches OVH unrecognised and answers 404 model_not_found.
  chatBody.model = ovhUpstreamModelId(requestedModel);
+ // Lane quirks, keyed by canonical catalog id so an alias resolves to the same
+ // model (the wire id above has already lost its `ovh-free/` prefix).
+ const canonicalModelId = resolveCanonicalModelId(requestedModel);
+ if (canonicalModelId === OVH_NO_EFFORT_MODEL) {
+  // Measured 2026-10-22: with `reasoning_effort` present this model answers
+  // HTTP 200 whose body is a bare `data: [DONE]` — no deltas, no error — at
+  // max_tokens 4000 and 32000 alike; without the field it streams its own
+  // reasoning plus a proper tool call. Every other OVH model tolerates the
+  // field, so the strip is this model only. The responses-path translation
+  // cannot reintroduce it: chatBodyFromResponsesBody copies a fixed scalar
+  // list that carries no reasoning/effort key.
+  delete chatBody.reasoning_effort;
+ }
+ if (canonicalModelId === OVH_STRICT_TOOL_CALL_ID_MODEL) {
+  // Quirk documented on normalizeOvhToolCallIds: a host-supplied history id
+  // that is not 9 alphanumerics kills the turn upstream (400 non-streamed,
+  // silent `[DONE]`-only 200 streamed).
+  normalizeOvhToolCallIds(chatBody.messages);
+ }
  // Bypassing the fingerprint does not exempt OVH from malformed tool
  // arguments: capture the caller's own schemas before translation for repair.
  const argSchemas = buildArgRepairSchemas(Array.isArray(parsedBody.tools) ? parsedBody.tools : []);
@@ -503,6 +766,7 @@ async function handleOvhRequest(opts: {
  }
  if (!upstreamRes.ok) {
   log("warn", `ovh upstream ${upstreamRes.status} for model ${requestedModel}`, { status: upstreamRes.status, model: requestedModel }, reqId);
+  audit?.attemptFailure({ attempt: 0, status: upstreamRes.status, reason: "final-upstream-status" });
   const raw = await upstreamRes.text().catch(() => null);
   if (raw === null) {
    log("error", "ovh upstream body unreadable", { status: upstreamRes.status, model: requestedModel }, reqId);
@@ -540,7 +804,7 @@ async function handleOvhRequest(opts: {
    findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
     ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
     : undefined,
-   { upstreamContentType: upstreamRes.headers.get("content-type") },
+   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
   );
   return;
  }
@@ -555,8 +819,22 @@ async function handleOvhRequest(opts: {
   }
   return;
  }
+ // The emptiness guard below is about a real upstream *stream*: a 200 body
+ // that is not SSE at all is passed through by `convertSseToJson` by
+ // contract, and says nothing about starvation.
+ const upstreamSpokeSse = looksLikeSse(sseText.trim());
  if (!responsesRequest) {
  const data = convertSseToJson(sseText, pathname, true, undefined, findGlob, undefined, argSchemas);
+  // Classified before the starvation guard: a starved turn is exactly the
+  // no_tool_calls record worth keeping.
+  auditChatBody(audit, data);
+  // An upstream that starved the request closes with a bare `data: [DONE]`:
+  // the aggregate is an empty assistant turn, which must surface as an error
+  // rather than as a finished (and silently blank) completion.
+  if (upstreamSpokeSse && ovhAggregateIsEmpty(data)) {
+   respondOvhEmptyStream(res, reqId, requestedModel);
+   return;
+  }
   if (!res.headersSent) {
    res.writeHead(upstreamRes.status, { "content-type": "application/json" });
    res.end(data);
@@ -566,6 +844,11 @@ async function handleOvhRequest(opts: {
   return;
  }
  const chat = sseToChatCompletionJson(sseText, true, undefined, findGlob, undefined, argSchemas);
+ auditChatCompletion(audit, chat);
+ if (upstreamSpokeSse && ovhAnswerIsEmpty(chat)) {
+  respondOvhEmptyStream(res, reqId, requestedModel);
+  return;
+ }
  const resp = chatResponsesJsonFromChatCompletion(chat, requestedModel);
  if (clientRequestedStream) {
   if (!res.headersSent) {
@@ -602,8 +885,9 @@ async function handleKiloRequest(opts: {
  reqId: string;
  clientRequestedStream: boolean;
  sessionKey?: string | null;
+ audit?: ToolcallRecorder;
 }): Promise<void> {
- const { parsedBody, pathname, req, res, reqId, clientRequestedStream, sessionKey } = opts;
+ const { parsedBody, pathname, req, res, reqId, clientRequestedStream, sessionKey, audit } = opts;
  const isStream = clientRequestedStream;
  const kiloController = new AbortController();
  const kiloArgSchemas = buildArgRepairSchemas(Array.isArray(parsedBody.tools) ? parsedBody.tools : []);
@@ -630,6 +914,8 @@ async function handleKiloRequest(opts: {
     signal: kiloController.signal,
    },
    reqId,
+   undefined,
+   (info) => audit?.attemptFailure(info),
   );
   if (response.status === 400 && !res.writableEnded) {
    // Token-clamp retry only. The model is NEVER reassigned: a 400 must
@@ -660,6 +946,8 @@ async function handleKiloRequest(opts: {
        signal: kiloController.signal,
       },
       reqId,
+      undefined,
+      (info) => audit?.attemptFailure(info),
      );
      if (retryRes.ok) {
       log("info", `kilo 400 recovery succeeded with clamped tokens for model ${String(retryBody.model)}`, { model: retryBody.model }, reqId);
@@ -674,6 +962,7 @@ async function handleKiloRequest(opts: {
   req.off("error", abortKiloOnClientGone);
  }
  if (response.ok) recordUpstreamSuccess("kilo", { sessionKey });
+ else audit?.attemptFailure({ attempt: 0, status: response.status, reason: "final-upstream-status" });
 
  if (isStream && response.ok && response.body) {
   const ct = response.headers.get("content-type") || "text/event-stream";
@@ -698,14 +987,16 @@ async function handleKiloRequest(opts: {
      pathname: pathname.endsWith("/responses") ? "/v1/responses" : "/v1/chat/completions",
     }
     : undefined,
-   { upstreamContentType: response.headers.get("content-type") },
+   { upstreamContentType: response.headers.get("content-type"), audit: audit?.active ? audit : undefined },
   );
  } else {
-  let rawText = await response.text();
+  const rawUpstreamText = await response.text();
+  let rawText = rawUpstreamText;
   if (response.ok && kiloArgSchemas.size > 0) {
    rawText = convertSseToJson(rawText, pathname, true, undefined, undefined, undefined, kiloArgSchemas);
    rawText = repairJsonToolArguments(rawText, pathname, kiloArgSchemas);
   }
+  if (response.ok) auditFinalBody(audit, pathname, rawUpstreamText, rawText);
   const data = withRateLimitHint(response.status, rawText);
   const ct = response.headers.get("content-type") || "application/json";
   res.writeHead(response.status, { "content-type": ct });
@@ -1502,6 +1793,17 @@ export function startProxy(
     }
    } catch { }
 
+   // Tool-call audit capture, BEFORE any body mutation (zen failover swaps the
+   // model, the fingerprint injects placeholder tools): `declaredNames` must be
+   // the caller's own surface, and a host re-send of the same conversation has
+   // to hash to the same retry key. Both are bounded names/lists — never
+   // message text or argument values.
+   const auditModel = parsedBody !== null && typeof parsedBody.model === "string" ? parsedBody.model : "unknown";
+   const auditDeclaredNames = parsedBody !== null ? declaredToolNames(parsedBody) : [];
+   const auditConversationSeed = parsedBody !== null
+    ? { model: auditModel, messages: parsedBody.messages ?? parsedBody.input, tools: parsedBody.tools }
+    : undefined;
+
    const sessionKey = sessionKeyOf(parsedBody);
    // Zen free-tier gate failover: refused or fresh Zen sessions ride a
    // healthy Kilo model on the same wire API via the existing Kilo branch.
@@ -1522,6 +1824,20 @@ export function startProxy(
     isKilo = true;
     log("info", `zen gated — session failed over ${from} -> ${zenFailover.model}`, { model: from, failover: zenFailover.model }, reqId);
    }
+
+   // One recorder per turn, active only when the caller declared tools (an
+   // empty list is a no-op recorder that writes nothing). Created after the
+   // lane flags settle — a zen failover is served by the Kilo lane — while the
+   // model and tool names above stay the caller's, pre-mutation.
+   const audit = createToolcallRecorder({
+    reqId,
+    model: auditModel,
+    lane: isCline ? "cline" : isOvh ? "ovh" : isKilo ? "kilo" : "opencode",
+    wire: auditWireFor(target.pathname),
+    stream: clientRequestedStream,
+    declaredNames: auditDeclaredNames,
+    conversationSeed: auditConversationSeed,
+   });
 
    // OpenCode Zen free-tier fingerprint: upstream mandates stream: true and the
    // placeholder sextet {bash, glob, grep, read, edit, write}. Missing tools (such as on
@@ -1571,7 +1887,7 @@ export function startProxy(
      // Cline serves chat completions only, direct (never relay pool, no
      // opencode fingerprint). The pool module owns the per-user Bearer
      // token: the proxy only passes the body and maps the answer.
-     await handleClineRequest({ parsedBody, pathname: target.pathname, req, res, reqId, clientRequestedStream });
+     await handleClineRequest({ parsedBody, pathname: target.pathname, req, res, reqId, clientRequestedStream, audit });
     } else if (isKilo && parsedBody) {
      await handleKiloRequest({
       parsedBody,
@@ -1581,11 +1897,12 @@ export function startProxy(
       reqId,
       clientRequestedStream,
       sessionKey,
+      audit,
      });
    } else if (isOvh && parsedBody) {
     // OVH serves chat upstream only (see handleOvhRequest): direct, keyless,
     // no fingerprint, and a responses-path body translated to chat and back.
-    await handleOvhRequest({ parsedBody, pathname: target.pathname, req, res, reqId, clientRequestedStream });
+    await handleOvhRequest({ parsedBody, pathname: target.pathname, req, res, reqId, clientRequestedStream, audit });
    } else {
      // OpenCode routing — relay egress is for free-catalog models
      // only; unknown/paid models go direct upstream.
@@ -1709,6 +2026,7 @@ export function startProxy(
              issuerReported = true;
             },
            },
+           (info) => audit?.attemptFailure(info),
           );
          } finally {
           clearTimeout(relayTimeoutId);
@@ -1794,6 +2112,7 @@ export function startProxy(
           streamCloak,
           {
            upstreamContentType: response.headers.get("content-type"),
+           audit: audit.active ? audit : undefined,
            refire: async (reason) => {
             if (midStreamRefires >= 1) return null;
             midStreamRefires += 1;
@@ -1866,8 +2185,12 @@ export function startProxy(
           // different host entirely (logged the wrong relay before this).
           const servedRelay = servedIssuer ?? "direct";
           log("warn", `upstream ${response.status} for model ${String((parsedBody as Record<string, unknown> | null)?.model ?? "?")} via ${servedRelay === "direct" ? "direct upstream" : `relay ${servedRelay}`}`, { status: response.status, model: (parsedBody as Record<string, unknown> | null)?.model, path: req.url, relay: servedRelay }, reqId);
+          // The host sees this status as the turn's verdict (e.g. a 400
+          // rejecting the caller's tool schema); record it as such.
+          audit?.attemptFailure({ attempt: 0, status: response.status, reason: "final-upstream-status" });
          }
-         let rawText = await response.text();
+         const rawUpstreamText = await response.text();
+         let rawText = rawUpstreamText;
          let ct =
           response.headers.get("content-type") ||
           "application/json";
@@ -1878,6 +2201,7 @@ export function startProxy(
          const data = isRelayDisabledError(response.status, rawText)
           ? rawText
           : withFreeTierHint(response.status, withRateLimitHint(response.status, rawText));
+         if (response.ok) auditFinalBody(audit, target.pathname, rawUpstreamText, data);
          res.writeHead(response.status, { "content-type": ct });
          res.end(data);
         }
@@ -2000,6 +2324,7 @@ export function startProxy(
       }
       if (upstreamRes.status >= 400) {
        log("warn", `direct upstream ${upstreamRes.status} for model ${String(parsedBody?.model ?? "?")} ${target.pathname}`, { status: upstreamRes.status, model: parsedBody?.model, path: target.pathname }, reqId);
+       audit?.attemptFailure({ attempt: 0, status: upstreamRes.status, reason: "final-upstream-status" });
       }
       // Upstream degradation tracking, mirroring the relay path: successes
       // prove Zen reachable, 403 free-tier gates feed the health machine.
@@ -2057,14 +2382,16 @@ export function startProxy(
         reqId,
         "direct",
         streamCloak,
-        { upstreamContentType: upstreamRes.headers.get("content-type") },
+        { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
        );
       } else if (upstreamRes.body) {
-       let rawText = await upstreamRes.text();
+       const rawUpstreamText = await upstreamRes.text();
+       let rawText = rawUpstreamText;
        if (upstreamRes.ok && (outHeaders["content-type"]?.includes("text/event-stream") || looksLikeSse(rawText))) {
         rawText = convertSseToJson(rawText, target.pathname, callerHadTools, callerCaseRestore, callerFindGlob, callerInjected, callerArgSchemas);
         outHeaders["content-type"] = "application/json";
        }
+       if (upstreamRes.ok) auditFinalBody(audit, target.pathname, rawUpstreamText, rawText);
        res.writeHead(upstreamRes.status, outHeaders);
        res.end(rawText);
       } else {

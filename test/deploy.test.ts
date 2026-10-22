@@ -63,7 +63,7 @@ function instantTimers(t: test.TestContext): void {
 }
 
 test("relay worker sources keep the whitelist contract on every platform", () => {
-	const TEST_AUTH = "test-secret-w-0123456789abcdef0123456789";
+	const TEST_AUTH = "test-secret-w-0123456789abcdef0123456789"; // gitleaks:allow — fixed test fixture, not a credential
 	for (const [label, src] of [
 		["cloudflare", buildCloudflareRelayWorker(TEST_AUTH)],
 		["deno", buildDenoRelayScript(TEST_AUTH)],

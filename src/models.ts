@@ -1,12 +1,29 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 32 verified free models (live-verified 2026-10-21):
- * - 11 OpenCode Zen models (all Chat Completions — the last Responses model,
- *   muse-spark-1.2-contributor-free, was deprecated upstream 2026-10-18)
- * - 11 KiloCode Keyless Gateway models (OpenRouter format)
- * - 2 Cline direct-only models (per-user pool; one is Responses API)
+ * Defines the 37 verified free models (live-verified 2026-10-22):
+ * - 12 OpenCode Zen models (all Chat Completions)
+ * - 16 KiloCode Keyless Gateway models (OpenRouter format)
+ * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
+ *
+ * No static entry declares `api: "openai-responses"` any more: the Zen
+ * muse-spark contributor ids went first (1.3 on 2026-10-17, 1.2 on 2026-10-18)
+ * and Cline's Muse Spark 1.3 entry stopped resolving upstream on 2026-10-22.
+ * The responses plumbing stays for stale caches and future entries.
+ *
+ * Spec policy (2026-10-22): a fixed model declares its highest well-known
+ * spec. The canonical vendor sheet, the twin rows and the built-in catalog are
+ * compared field by field (context, output, modalities, effort ladder), and
+ * derived conventions are ignored (0.9x output caps, output repeated as the
+ * context, router pool ceilings, paid-tier serving configs) — a lane's own
+ * top_provider 0.9x figure is used only when the id has no published output
+ * and no cross-lane twin. A masked or
+ * mixed-backend id is the exception: it follows the serving provider's own
+ * declared spec, never a guessed backing model and never a live probe. Where a
+ * lane enforces less than the declared spec at runtime, the entry keeps the
+ * declared figure and notes the lane cap beside it, so a caller above that cap
+ * sees the authentic upstream error rather than a silently reduced catalog.
  */
 
 import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
@@ -243,41 +260,6 @@ export const OPENCODE_MODELS: ModelDef[] = [
    max: "max",
   },
  },
- {
-  // Added 2026-10-16 (recheck): live free id on the Zen lane, listed on the
-  // official free lineup while models.dev already tags it deprecated — the
-  // tag also sits on live ids and on already-dead ones (mimo-v2.5-free), so
-  // the live answer decides: chat 200 with tools + stream, and the tool call
-  // round-trips. Chat is the only
-  // native shape (/v1/responses answers 400 "Model does not support this
-  // protocol"), so `api` stays unset. Reasoning: the published ladder lists
-  // `high` only; high streams thinking and the unavailable rungs stay null
-  // so the picker never offers them. Vision verified live (a 1x1 PNG reads
-  // back as "Pink"). Context: published 1,048,576; a dual-canary prompt at
-  // ~400K words (~520K tokens, canaries at ~30%/~97% depth) recalls both
-  // markers, and a 1.2M-word prompt (~1.56M tokens) draws an empty-bodied
-  // 400 — the wall sits between, matching the published figure. maxTokens
-  // 131,072 published; 131,073 accepted (acceptance is not a cap, so the
-  // published figure stays the budget).
-  id: "exo-free",
-  name: "Exo [OpenCode]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text", "image"],
-  // The free datasheet lists only `high`, but the paid twin publishes
-  // minimal..xhigh, so the shared-model union exposes those rungs; `max` is
-  // not published by either and stays null.
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: null,
-  },
- },
 {
   // Added 2026-10-15: new free model on the OpenCode Zen lane. Live-verified by
   // probe, NOT copied from the published catalog — the entry for this exact
@@ -316,6 +298,82 @@ export const OPENCODE_MODELS: ModelDef[] = [
    max: "max",
   },
 },
+ {
+  // Added 2026-10-22: new free model on the OpenCode Zen lane, live-probed
+  // against the gateway rather than copied from a published row.
+  // Availability: 5/5 probes answered 200 through the fingerprint path
+  // (chat + stream + tool call), so this is a stable listing.
+  // Context: 1,000,000 measured — a needle planted at prompt_tokens 991,641
+  // is recalled, and a request above the window is refused. That makes the
+  // declared figure the lane's own 1M cap, not a published twin value.
+  // maxTokens: the rejection boundary is 524,288 (600,000 is refused with
+  // "does not support max tokens > 524288"), so the exact served ceiling is
+  // the budget. models.dev publishes the rounded 512,000; acceptance is not a
+  // cap, so the boundary wins.
+  // Vision verified live. Effort ladder probed level-by-level: low, medium,
+  // high, xhigh and max each answer 200 with reasoning deltas. `off` answers
+  // 400 and `minimal` is accepted but absent from the published ladder, so
+  // both stay null and the picker never offers them. Chat is the native
+  // shape, so `api` stays unset.
+  // Known caveat, measured on trivial prompts at high effort: the model
+  // sometimes calls the injected fingerprint placeholder tool, which the
+  // cloak strips — the host then sees a tool_calls finish with no visible
+  // calls. The turn still completes; nothing is dropped from a real call.
+  id: "minimax-m3.1-flash-free",
+  name: "MiniMax M3.1 Flash [OpenCode]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 524_288,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
+ {
+  // Added 2026-10-22. Availability on this lane is bursty: the same day it
+  // answered 1 of 19 probes across ~25 minutes and later 8 of 8 over 43
+  // seconds through an owned proxy. A 503 "Endpoint is unavailable" burst is
+  // retryable, not a death signal — never prune on it.
+  // Context: 262,144 measured. The gateway refuses a 323,580-token input with
+  // "longer than the model's context length (262144)", and a needle planted
+  // at prompt_tokens 129,736 is recalled. One near-window sample at 258,970
+  // missed once, so the top of the window is a recall boundary, not a
+  // truncation boundary.
+  // maxTokens: 65,536 published (models.dev /opencode). Acceptance is not a
+  // cap — 65,536 and 70,000 both answer 200 — so the published figure stays
+  // the budget.
+  // Effort ladder: low/medium/high/xhigh/max all answer 200 with reasoning.
+  // `off` and a bogus value answer 422 with the generic "Endpoint is
+  // unavailable" body, and `minimal` is accepted but absent from the
+  // published ladder, so all three stay null.
+  // Verified natively on BOTH shapes: chat stream + tool call + agent loop,
+  // and /v1/responses with bare-string and array input. /v1/messages is
+  // refused 400 ModelProtocolUnsupported. `api` stays unset (chat is the
+  // default) so the responses path keeps its native mapping. The
+  // /v1/responses + tools path was not reachable during the outage window,
+  // so that specific combination is unverified.
+  id: "flint-40b-free",
+  name: "Flint 40B [OpenCode]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 65_536,
+  input: ["text"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
 ];
 
 /**
@@ -469,13 +527,138 @@ export const KILO_MODELS: ModelDef[] = [
   thinkingFormat: "openrouter",
   thinkingLevelMap: KILO_REASONING_MAP,
  },
+ {
+  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
+  // both the chat and /v1/responses paths. 1,000,000 / 524,288 is the
+  // gateway `top_provider` pair, and the Zen twin (minimax-m3.1-flash-free)
+  // measured the same 524,288 output boundary — two lanes, one figure, so the
+  // twin reading is corroboration rather than a copy. Conservative twin note:
+  // both entries declare the served boundary; the rounded 512,000 some
+  // datasheets publish is not what either lane enforces.
+  // Reasoning is mandatory upstream: `none` and `off` answer 400 "Reasoning
+  // is mandatory", which is why both rungs stay null. When tools are present
+  // no reasoning deltas are reported at all (silent-thinking tool turns), so
+  // the map's level labels describe the effort sent, not visible thought.
+  id: "minimax/minimax-m3.1-flash:free",
+  name: "MiniMax M3.1 Flash [Kilo]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 524_288,
+  input: ["text", "image"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
+ {
+  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
+  // both the chat and /v1/responses paths.
+  // 1,000,000 / 131,072 is the FREE row, and it agrees everywhere it is
+  // published: the Kilo free listing, the gateway `top_provider`, the Kilo
+  // model page, OpenRouter, and models.dev's free row. The 262,144 / 235,929
+  // pair belongs to the PAID row behind a different id — never copy it here.
+  // Thinking: the gateway's reasoning_options expose a type toggle; every
+  // effort value answers 200 but the deltas are cosmetic, so the shared Kilo
+  // map is the honest declaration.
+  // Data caveat: NVIDIA's trial terms set mayTrainOnYourPrompts true for this
+  // free id, so treat prompts as non-private.
+  // Reliability: `max` can draw a transient 502/503 upstream; it is
+  // retryable and does not indicate model death.
+  id: "nvidia/nemotron-3.5-super-vl:free",
+  name: "Nemotron 3.5 Super VL [Kilo]",
+  reasoning: true,
+  contextWindow: 1_000_000,
+  maxTokens: 131_072,
+  input: ["text", "image"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
+ {
+  // Added 2026-10-22: this is the Kilo twin of the Zen `beam-free` entry
+  // (same Reflection AI weights). 1,048,576 / 131,072 agrees across the
+  // gateway, models.dev (kilo, vercel and opencode rows) and the vendor docs,
+  // so no reconciliation was needed. Tool call + agent loop verified on chat
+  // and /v1/responses.
+  // Always-on reasoning: the model thinks even with `none`/`off`, so the
+  // toggle cannot disable it and only the effort ladder is exposed. `minimal`
+  // is accepted but ignored upstream, hence null. `max` is a real level.
+  // Upstream echoes the bare model id `reflection/beam` without a provider
+  // field; the catalog keeps the `reflection/beam-free` listing id here so
+  // alongside `beam-kilo` routing stays unambiguous against the Zen `beam`.
+  id: "reflection/beam-free",
+  name: "Beam 1.0 [Kilo]",
+  reasoning: true,
+  contextWindow: 1_048_576,
+  maxTokens: 131_072,
+  input: ["text"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: {
+   off: null,
+   minimal: null,
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: "max",
+  },
+ },
+ {
+  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
+  // both the chat and /v1/responses paths. Same weights as the Zen
+  // `flint-40b-free` entry, which publishes 65,536 output for them, so the
+  // declared output is the conservative published figure.
+  // Context: the vendor card says prompt and output SHARE the 262,144 window.
+  // The gateway reports 235,929 for this id, which is its 0.9x-window
+  // convention rather than a measured cap; the shared published window is the
+  // declared value.
+  // Thinking is mandatory: `none` answers 400, so `off` stays null. Reasoning
+  // is verbose — on a tight max_tokens budget the thinking can consume the
+  // whole allowance and end the turn with empty content, which is a budget
+  // symptom, not a dead model.
+  id: "recursive/flint-v1.0:free",
+  name: "Flint 40B [Kilo]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 65_536,
+  input: ["text"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
+ {
+  // Added 2026-10-22: exact gateway id, tool call + agent loop verified on
+  // both the chat and /v1/responses paths. 262,144 / 235,929 is the pair this
+  // lane publishes through the gateway `top_provider`, and no cross-lane cap
+  // exists for the id — there is no twin elsewhere to reconcile against.
+  // Both figures follow the same 0.9x-window convention: prompt and output
+  // share the 262,144 window, so 235,929 is the output budget that still
+  // leaves prompt headroom.
+  // `none` disables thinking and answers 200, but like `off` everywhere else
+  // it maps nowhere here, so the shared Kilo ladder is declared.
+  // Reliability: roughly 60 percent of attempts hit the shared Phala 429
+  // quota. A 429 means the model is alive and rate-limited — never prune on
+  // it; the same id answers 200 once the shared pool frees up.
+  id: "xingchen-agi/xing4.0-29b-a4b:free",
+  name: "Xing4.0 29B A4B [Kilo]",
+  reasoning: true,
+  contextWindow: 262_144,
+  maxTokens: 235_929,
+  input: ["text"],
+  thinkingFormat: "openrouter",
+  thinkingLevelMap: KILO_REASONING_MAP,
+ },
 ];
 
 /**
- * Narrow effort map for the Cline flash models still in the catalog (GLM 5.3
- * Flash) — the reference reasoningOptions list effort values [low, high, max]
- * only (no toggle on GLM); minimal/medium/xhigh are not offered so the host
- * never sends an unsupported level (the proxy forwards effort verbatim).
+ * Narrow effort map for the Cline model in the catalog (GLM 5.3 Flash) — the
+ * reference reasoningOptions list effort values [low, high, max] only (no
+ * toggle on GLM); minimal/medium/xhigh are not offered so the host never
+ * sends an unsupported level (the proxy forwards effort verbatim).
  */
 const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -493,26 +676,13 @@ const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
  * and collision-free against the OpenCode/Kilo catalogs (the Kilo-routed
  * poolside/laguna-s-2.1:free is intentionally NOT duplicated here).
  * Endpoint: https://api.cline.bot/api/v1/chat/completions
+ *
+ * `cline-free/muse-spark-1.3-contributor` was the last entry declaring
+ * `api: "openai-responses"`; it stopped resolving upstream on 2026-10-22
+ * (Cline answers 404 "Cline has no such model"), so the catalog now carries
+ * chat-completions models only on this lane.
  */
 export const CLINE_MODELS: ModelDef[] = [
- {
-  id: "cline-free/muse-spark-1.3-contributor",
-  name: "Muse Spark 1.3 [Cline]",
-  reasoning: true,
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  api: "openai-responses",
- input: ["text", "image"],
-  thinkingLevelMap: {
-   off: null,
-   minimal: "minimal",
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: null,
-  },
- },
  {
   id: "z-ai/glm-5.3-flash",
   name: "GLM 5.3 Flash [Cline]",
@@ -697,7 +867,6 @@ export const MODEL_ALIASES: Record<string, string> = {
  "north-mini-code": "cohere/north-mini-code:free",
  "lfm-2.5": "liquid/lfm-2.5-2.6b:free",
  "glm-5.3-flash": "glm-5.3-flash-free",
- "exo": "exo-free",
  "glyph-cluster": "stealth/glyph-cluster",
  "mimo-v2.6-flash": "mimo-v2.6-flash-free",
  "nemotron-3.5-super-vl": "nemotron-3.5-super-vl-free",
@@ -705,6 +874,13 @@ export const MODEL_ALIASES: Record<string, string> = {
  "longcat": "longcat-2.5-preview-free",
  "beam": "beam-free",
  "deepseek-v4.1-flash": "deepseek-v4.1-flash-free",
+ // Added 2026-10-22. "flint" stays on the Zen lane; the Kilo twin gets its
+ // own name so neither entry can shadow the other.
+ "minimax-m3.1-flash": "minimax-m3.1-flash-free",
+ "flint": "flint-40b-free",
+ "flint-kilo": "recursive/flint-v1.0:free",
+ "beam-kilo": "reflection/beam-free",
+ "xing4.0": "xingchen-agi/xing4.0-29b-a4b:free",
  // provider-prefixed short aliases (slash-normalized)
  "laguna-s-2.1:free": "poolside/laguna-s-2.1:free",
  "laguna-xs-2.1:free": "poolside/laguna-xs-2.1:free",
@@ -758,7 +934,7 @@ export const OVH_MODEL_IDS = new Set<string>([
   .map(([alias]) => alias),
 ]);
 /**
- * Combined list of all 34 static free models (canonical)
+ * Combined list of all 37 static free models (canonical)
  */
 export const ALL_MODELS: ModelDef[] = [...OPENCODE_MODELS, ...KILO_MODELS, ...CLINE_MODELS, ...OVH_MODELS];
 

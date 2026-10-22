@@ -159,10 +159,13 @@ test("refreshCatalog 200 maps the /inference/v1/models free list onto catalog fl
  });
 });
 
-test("stale cache without etag serves the Cline Muse Spark entry with repaired responses api (issue #6)", async () => {
+test("stale cache without etag drops the retired Cline Muse Spark entry (issue #6 shape)", async () => {
  await withCacheFileIsolation(async () => {
-  // Reporter's exact file shape: 3-day-old cache, no etag, an entry
-  // written before enrichment knew it (api missing), paid ids present.
+  // Reporter's exact file shape: 3-day-old cache, no etag, an entry written
+  // before enrichment knew it (api missing), paid ids present — plus the
+  // Cline Muse Spark entry, which was still in the catalog when those caches
+  // were written and is now retired (2026-10-22). The stale row must be
+  // dropped, not served: a dead-listed id never re-enters the picker.
   const staleSpark = {
    id: "cline-free/muse-spark-1.3-contributor",
    name: "Muse Spark 1.2 (1M)",
@@ -205,8 +208,11 @@ test("stale cache without etag serves the Cline Muse Spark entry with repaired r
   const result = await refreshCatalog(false);
   assert.equal(calls, 1, "etagless stale cache must attempt one plain revalidation fetch");
   const spark = result.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
-  assert.ok(spark, "stale Cline entry must survive");
-  assert.equal(spark.api, "openai-responses", "stale Cline api must be backfilled, not undefined");
+  assert.equal(spark, undefined, "the retired Cline entry must not survive a stale cache");
+  assert.ok(
+   result.some((m) => m.id === "z-ai/glm-5.3-flash"),
+   "the surviving Cline model must still come from the static base",
+  );
   assert.equal(result.some((m) => m.id === "claude-fable-5-1"), false, "paid ids must be purged");
  });
 });
@@ -278,6 +284,15 @@ test("isFreeCatalogId accepts -free, :free, /free and known ids, rejects paid an
 	assert.equal(isFreeCatalogId("ovh-free/Mistral-7B-Instruct-v0.3"), false);
 	assert.equal(isFreeCatalogId("ovh-free/Meta-Llama-3_3-70B-Instruct"), true);
 	assert.equal(isFreeCatalogId("ovh/Mistral-Nemo-Instruct-2407"), false, "an unnamespaced OVH id is not in the catalog");
+	// Added 2026-10-22: two Zen ids without a `:free` suffix rely on the static
+	// catalog for recognition, and the five Kilo ids carry `:free`.
+	assert.equal(isFreeCatalogId("minimax-m3.1-flash-free"), true);
+	assert.equal(isFreeCatalogId("flint-40b-free"), true);
+	assert.equal(isFreeCatalogId("minimax/minimax-m3.1-flash:free"), true);
+	assert.equal(isFreeCatalogId("nvidia/nemotron-3.5-super-vl:free"), true);
+	assert.equal(isFreeCatalogId("reflection/beam-free"), true);
+	assert.equal(isFreeCatalogId("recursive/flint-v1.0:free"), true);
+	assert.equal(isFreeCatalogId("xingchen-agi/xing4.0-29b-a4b:free"), true);
  assert.equal(isFreeCatalogId(""), false);
 });
 
@@ -298,20 +313,39 @@ test("sanitizeCatalogModels keeps every OVH id and repairs its source", () => {
 	assert.deepEqual(merged.map((m) => m.id).sort(), OVH_MODELS.map((m) => m.id).sort());
 });
 
-test("sanitizeCatalogModels repairs a stale Cline Muse Spark api to openai-responses (issue #6)", () => {
- const staleSpark = {
+test("sanitizeCatalogModels repairs a stale Cline row against its static definition (issue #6)", () => {
+ // A cache written while the Cline Muse Spark entry was still catalogued can
+ // carry a wrong api on the surviving Cline model. The static definition is
+ // authoritative: the stale `openai-responses` label must be replaced by the
+ // static chat row, and a retired id must never be repaired back into life.
+ const staleGlm = {
+  id: "z-ai/glm-5.3-flash",
+  name: "GLM 5.3 Flash (1M)",
+  reasoning: false,
+  contextWindow: 128_000,
+  maxTokens: 4_096,
+  api: "openai-responses" as const,
+  input: ["text"] as ["text"],
+  source: "opencode" as const,
+ };
+ const retiredSpark = {
   id: "cline-free/muse-spark-1.3-contributor",
-  name: "Muse Spark 1.2 (1M)",
+  name: "Muse Spark 1.3 (1M)",
   reasoning: true,
   contextWindow: 1_048_576,
   maxTokens: 131_072,
-  api: "openai-completions" as const,
+  api: "openai-responses" as const,
   input: ["text", "image"] as ["text", "image"],
-  source: "opencode" as const,
+  source: "cline" as const,
  };
- const merged = mergeCatalog([], [staleSpark]);
- assert.equal(merged.length, 1);
- assert.equal(merged[0].api, "openai-responses");
+ const merged = mergeCatalog([], [staleGlm, retiredSpark]);
+ assert.deepEqual(merged.map((m) => m.id), ["z-ai/glm-5.3-flash"], "the retired Cline id must be purged");
+ assert.equal(merged[0].api, undefined, "the stale responses label must not survive the static chat definition");
+ assert.equal(merged[0].name, "GLM 5.3 Flash [Cline]", "the static display name wins");
+ assert.equal(merged[0].contextWindow, 1_048_576);
+ assert.equal(merged[0].maxTokens, 131_072);
+ assert.equal(merged[0].reasoning, true);
+ assert.equal(merged[0].source, "cline");
 });
 
 test("readCatalogCache purges paid ids persisted by pre-fix refreshes (issue #6)", async () => {

@@ -41,6 +41,8 @@ All commands are available inside the OMP or Pi TUI via `/freeflow`:
 
 Logs are written to `~/.pi/agent/pi-freeflow.log` with auto-rotation at 10MB (10 files). Each entry includes a request correlation ID for end-to-end tracing. Full debug logging is on by default so error reports can include complete request lifecycles (toggle with `/freeflow debug off`).
 
+A second, separate file records tool-call turns: `~/.pi/agent/toolcall-audit.jsonl`, rotated at 5 MiB. It holds one line per finished turn that declared tools, one per upstream attempt abandoned in favour of another, and one per conversation the host retried — tool names, argument sizes, finish reasons and classified failures, never message text or argument values. Field-by-field detail and jq recipes are in [Architecture](/pages/architecture#tool-call-audit-log).
+
 ## Troubleshooting
 
 | Problem | Root Cause | Solution |

@@ -4,8 +4,8 @@ layout: home
 
 hero:
   name: "pi-freeflow"
-  text: "32 free models. Up to 1M context. Zero API keys."
-  tagline: "Thin OMP/Pi provider: model list + dumb relay proxy + log. Host pi-ai owns thinking & normalization."
+  text: "37 free models. Up to 1M context. Zero API keys."
+  tagline: "Thin OMP/Pi provider: model list + relay proxy + logs. Host pi-ai owns thinking & normalization."
   actions:
     - theme: brand
       text: Get Started
@@ -15,8 +15,8 @@ hero:
       link: https://github.com/trefeon/pi-freeflow
 
 features:
-  - title: "32 Curated Free Models"
-    details: 11 OpenCode Zen + 11 KiloCode Gateway + 2 Cline + 8 OVHcloud AI Endpoints — up to 1M context, 384K output, vision support, no API keys.
+  - title: "37 Curated Free Models"
+    details: 12 OpenCode Zen + 16 KiloCode Gateway + 1 Cline + 8 OVHcloud AI Endpoints — up to 1M context, 512K output, vision support, no API keys.
   - title: "BYO Relay Pool"
     details: Round-robin across your own relays — a self-hosted pool that runs many egress IPs on one small host, or Cloudflare Workers / Vercel Edge / Deno Deploy workers.
   - title: "Adaptive Failover"
@@ -26,5 +26,5 @@ features:
   - title: "Thin by Design"
     details: No build step, one runtime dep, no payload normalizer — host pi-ai owns thinking and reasoning translation.
   - title: "Observable Logging"
-    details: Auto-rotating 10MB file logger at ~/.pi/agent/pi-freeflow.log with request correlation IDs.
+    details: Auto-rotating 10MB file logger at ~/.pi/agent/pi-freeflow.log with request correlation IDs, plus a per-turn tool-call audit log for failed and retried turns.
 ---

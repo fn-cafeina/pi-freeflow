@@ -95,12 +95,11 @@ test("refreshCatalog passes an abortable timeout signal and falls back instead o
 });
 
 /**
- * Static ids an older catalog cache cannot know about: the Cline entries were
- * added after earlier releases wrote their cache, so a legacy list can hold as
- * many entries as the static set while still missing these two ids.
+ * Static ids an older catalog cache cannot know about: the surviving Cline
+ * entry was added after earlier releases wrote their cache, so a legacy list
+ * can hold as many entries as the static set while still missing this id.
  */
 const STATIC_IDS_ABSENT_FROM_LEGACY_CACHE = [
-	"cline-free/muse-spark-1.3-contributor",
 	"z-ai/glm-5.3-flash",
 ];
 
@@ -136,10 +135,10 @@ async function withFetch<T>(impl: typeof fetch, run: () => Promise<T>): Promise<
 }
 
 /**
- * Cache fixture imitating a catalog written before the Cline entries existed:
- * every static id except those two, padded with rotated-in upstream frees so
- * the total still matches the static size (the old "cache is big enough"
- * heuristic accepted it).
+ * Cache fixture imitating a catalog written before the surviving Cline entry
+ * existed: every static id except the one above, padded with rotated-in
+ * upstream frees so the total still matches the static size (the old "cache is
+ * big enough" heuristic accepted it).
  */
 function legacyCacheModels(): RegisteredModel[] {
 	const models: RegisteredModel[] = ALL_MODELS.filter(

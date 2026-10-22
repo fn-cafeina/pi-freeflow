@@ -1,17 +1,17 @@
 # Model Catalog & Upstream Routing
 
-pi-freeflow provides unified access to **32 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
+pi-freeflow provides unified access to **37 curated free models** across four upstream providers: **OpenCode Zen**, **KiloCode Gateway**, **Cline**, and **OVHcloud AI Endpoints**.
 
 ## Upstream Protocol Distinction
 
 ### OpenCode Zen — Responses API (`/v1/responses`)
 - **Endpoint**: `https://opencode.ai/inference/v1/responses`
-- **Models**: none right now — the lane is wired for any model that declares `api: "openai-responses"`, but the two Zen muse-spark contributor ids were retired upstream (1.3 on 2026-10-17, 1.2 on 2026-10-18). The Cline Muse Spark entry still serves this flavor.
+- **Models**: none right now — the lane is wired for any model that declares `api: "openai-responses"`, but the two Zen muse-spark contributor ids were retired upstream (1.3 on 2026-10-17, 1.2 on 2026-10-18) and Cline's Muse Spark 1.3 entry stopped resolving on 2026-10-22 (404 `Cline has no such model`). No static entry declares the flavor any more; stale caches and a future id still get it.
 - **Config**: `api: "openai-responses"`, session affinity via OpenAI-nosession
 
 ### OpenCode Zen — Chat Completions (`/v1/chat/completions`)
 - **Endpoint**: `https://opencode.ai/inference/v1/chat/completions`
-- **Models**: 11 models (Cat Jam, DeepSeek V4.1 Flash, LongCat, GLM-5.3 Flash, Beam, Exo, MiMo, Nemotron, Big Pickle, etc.)
+- **Models**: 12 models (Cat Jam, DeepSeek V4.1 Flash, LongCat, GLM-5.3 Flash, Beam, Flint, MiMo, MiniMax M3.1 Flash, Nemotron, Big Pickle, etc.)
 - **Config**: `api: "openai-completions"`, supports reasoning effort
 
 ### OpenCode Zen — Messages API (`/v1/messages`)
@@ -22,12 +22,12 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 ### KiloCode Gateway (`/v1/chat/completions`)
 - **Endpoint**: `https://api.kilo.ai/api/gateway/chat/completions`
 - **Auth**: keyless — no `Authorization` header at all (the gateway rejects a placeholder credential with `401 INVALID_TOKEN`; 200 req/hr per IP)
-- **Models**: 13 models with OpenRouter-style thinking format
+- **Models**: 16 models with OpenRouter-style thinking format
 
 ### Cline (`/api/v1/chat/completions`)
 - **Endpoint**: `https://api.cline.bot/api/v1/chat/completions`
 - **Auth**: per-user login via `/freeflow cline login` (browser approval, saved to a per-user pool on your machine)
-- **Models**: 2 models from Cline's rotating free promo; requests roll across saved logins on the daily free limit
+- **Models**: 1 model from Cline's rotating free promo; requests roll across saved logins on the daily free limit
 - **Routing**: direct only, never through the relay pool
 
 ### OVHcloud AI Endpoints (`/v1/chat/completions`)
@@ -37,9 +37,9 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 - **Routing**: direct only, never through the relay pool
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
-## 32 Model Specifications
+## 37 Model Specifications
 
-### OpenCode Zen (11 models)
+### OpenCode Zen (12 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -52,10 +52,11 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 | `longcat-2.5-preview-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `glm-5.3-flash-free` | 1,048,576 | 131,072 | low, high, max | ✅ |
 | `beam-free` | 1,048,576 | 131,072 | low..max | ❌ |
-| `exo-free` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `deepseek-v4.1-flash-free` | 1,048,576 | 393,216 | low, high, max | ✅ |
+| `minimax-m3.1-flash-free` | 1,000,000 | 524,288 | low..max | ✅ |
+| `flint-40b-free` | 262,144 | 65,536 | low..max | ❌ |
 
-### KiloCode Gateway (11 models)
+### KiloCode Gateway (16 models)
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -70,14 +71,18 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 | `kilo-auto/free` | 256,000 | 10,000 | minimal..xhigh | ❌ |
 | `openrouter/free` | 200,000 | 65,536 | minimal..xhigh | ✅ |
 | `stealth/glyph-cluster` | 256,000 | 256,000 | minimal..xhigh | ❌ |
+| `minimax/minimax-m3.1-flash:free` | 1,000,000 | 524,288 | low..max | ✅ |
+| `nvidia/nemotron-3.5-super-vl:free` | 1,000,000 | 131,072 | minimal..xhigh | ✅ |
+| `reflection/beam-free` | 1,048,576 | 131,072 | low..max | ❌ |
+| `recursive/flint-v1.0:free` | 262,144 | 65,536 | minimal..xhigh | ❌ |
+| `xingchen-agi/xing4.0-29b-a4b:free` | 262,144 | 235,929 | minimal..xhigh | ❌ |
 
-### Cline (2 models)
+### Cline (1 model)
 
-Cline free models come from a rotating per-account promo and need a browser login (`/freeflow cline login`; manage with `/freeflow cline accounts` and `/freeflow cline logout`). They run direct only, never through the relay pool.
+Cline free models come from a rotating per-account promo and need a browser login (`/freeflow cline login`; manage with `/freeflow cline accounts` and `/freeflow cline logout`). They run direct only, never through the relay pool. Cline's Muse Spark 1.3 entry stopped resolving upstream on 2026-10-22 (404 `Cline has no such model`), so the lane carries one model.
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `cline-free/muse-spark-1.3-contributor` | 1,048,576 | 131,072 | minimal..xhigh | ✅ |
 | `z-ai/glm-5.3-flash` | 1,048,576 | 131,072 | low, high, max | ✅ |
 
 ### OVHcloud AI Endpoints (8 models)
@@ -123,9 +128,9 @@ When a model is available under multiple twin names (e.g. `deepseek-v4.1-flash-f
 
 | Upstream | Models | Host | Wire Protocol | Auth |
 | :--- | :---: | :--- | :--- | :--- |
-| **OpenCode Zen** | 11 | `opencode.ai/inference` | `/inference/v1` (Chat; the Responses lane is wired for future ids) | `Bearer public` |
-| **KiloCode Gateway** | 13 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
-| **Cline** | 2 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
+| **OpenCode Zen** | 12 | `opencode.ai/inference` | `/inference/v1` (Chat; the Responses lane is wired for future ids) | `Bearer public` |
+| **KiloCode Gateway** | 16 | `api.kilo.ai` | `/api/gateway/chat/completions` | Keyless |
+| **Cline** | 1 | `api.cline.bot` | `/api/v1/chat/completions` | Per-user login (`/freeflow cline login`) |
 | **OVHcloud AI Endpoints** | 8 | `oai.endpoints.kepler.ai.cloud.ovh.net` | `/v1/chat/completions` (responses path translated) | Keyless, anonymous |
 ## Stealth previews
 

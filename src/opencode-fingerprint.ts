@@ -712,6 +712,32 @@ function cloakChatMessage(
  else delete m.tool_calls;
 }
 
+/**
+ * Fold one streamed `function.name` delta into the accumulated tool name.
+ *
+ * Providers stream names in two legitimate shapes, and the difference is the
+ * presence of arguments on the same delta:
+ *
+ * - **Fragment** (`name`, no `arguments`): the ordinary piecewise stream — the
+ *   delta carries the next slice of the name, so append it.
+ * - **Repeat header** (`name` AND `arguments`): OpenCode Zen restates the
+ *   WHOLE name on the frame that opens the arguments (observed live
+ *   2026-10-22: `name:"get_weather"` alone, then `name:"get_weather",
+ *   arguments:"{…}"`). The name there is authoritative, so replace instead of
+ *   appending — appending produced `get_weatherget_weather`, a tool name no
+ *   tool declaration matches. A full mid-stream restatement is the same shape.
+ *
+ * Shared by both aggregators (the non-streamed completion cloak and the
+ * streaming cloak) so streamed and aggregated output always agree.
+ */
+export function accumulateToolCallName(
+ previous: string | undefined,
+ delta: string,
+ carriesArguments: boolean,
+): string {
+ return carriesArguments ? delta : `${previous ?? ""}${delta}`;
+}
+
 export function sseToChatCompletionJson(
  sseText: string,
  callerHadTools = true,
@@ -777,7 +803,15 @@ export function sseToChatCompletionJson(
         };
         if (tc.id) existing.id = tc.id;
         if (tc.type) existing.type = tc.type;
-        if (tc.function?.name) existing.function.name += tc.function.name;
+        if (tc.function?.name) {
+         // See accumulateToolCallName: a name on an arguments-carrying delta
+         // is the whole name restated, not another fragment.
+         existing.function.name = accumulateToolCallName(
+          existing.function.name,
+          tc.function.name,
+          typeof tc.function.arguments === "string" && tc.function.arguments !== "",
+         );
+        }
         if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
         toolCallsMap.set(key, existing);
        }

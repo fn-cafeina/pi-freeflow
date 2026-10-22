@@ -165,12 +165,18 @@ export interface RelayAffinity {
  *        and `onServed` reports which relay actually produced the response —
  *        `null` for the direct fallback — so the caller does not have to infer
  *        the issuer from mutable global state.
+ * @param onAttemptFailure Observation hook: called once for every attempt this
+ *        turn abandons in favour of another (each roll branch, plus the header
+ *        deadline and network faults). `attempt` is 1-based and monotonic across
+ *        candidates and hedges; `status` is the HTTP status when headers arrived.
+ *        A throwing hook is swallowed — observation must never break a roll.
  */
 export async function relayFetch(
 	url: string,
 	opts: RequestInit = {},
 	reqId?: string,
 	affinity: RelayAffinity = {},
+	onAttemptFailure?: (info: { attempt: number; status?: number; reason: string }) => void,
 ): Promise<Response> {
 	const rid = reqId || randomUUID().slice(0, 8);
 	const relayState = getActiveRelayState();
@@ -200,6 +206,23 @@ export async function relayFetch(
 	let sawBare500 = false;
 	/** True only while every candidate that produced a response answered 429. */
 	let rateLimitOnly = true;
+	/**
+	 * Abandoned candidates in roll order, 1-based — the numbering the failure
+	 * hook reports. A candidate rejected before any fetch consumes a number
+	 * too: the roll abandoned it just the same.
+	 */
+	let attemptNo = 0;
+	const reportAbandoned = (reason: string, status?: number): void => {
+		attemptNo += 1;
+		if (!onAttemptFailure) return;
+		try {
+			onAttemptFailure(status === undefined
+				? { attempt: attemptNo, reason }
+				: { attempt: attemptNo, status, reason });
+		} catch {
+			// Observation is best-effort; never let it disturb the roll.
+		}
+	};
 	const u = new URL(url);
 	const relayTarget = `${u.protocol}//${u.host}`;
 	const relayPath = `${u.pathname}${u.search}`;
@@ -248,6 +271,7 @@ export async function relayFetch(
 					{ upstream: url },
 					rid,
 				);
+				reportAbandoned("invalid-relay-url");
 				continue;
 			}
 			// Per-candidate wiring: relay-target headers, per-relay auth, and a
@@ -398,6 +422,11 @@ export async function relayFetch(
 							throw hedgeErr;
 						}
 						markRelayFailure(nextUrl, 0, (hedgeErr as Error)?.message || String(hedgeErr));
+						// Both legs of this race were abandoned; the outer catch
+						// reports the primary one, this reports the hedge leg.
+						reportAbandoned(
+							(hedgeErr as Error)?.name === "AbortError" ? "header-timeout" : "network-error",
+						);
 						hedgeSkipNext = true;
 						throw hedgeErr;
 					}
@@ -425,6 +454,7 @@ export async function relayFetch(
 						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit HTTP 504 — rolled to next relay`, "warning");
 					}
 				}
+				reportAbandoned("gateway-timeout", 504);
 				continue;
 			}
 			// Relay payload cap hit (413: request exceeds host payload limit):
@@ -449,6 +479,7 @@ export async function relayFetch(
 						ui.notify(`relay ${shortRelayLabel(targetUrl)} hit payload limit — trying next path`, "warning");
 					}
 				}
+				reportAbandoned("payload-too-large", 413);
 				continue;
 			}
 
@@ -484,6 +515,7 @@ export async function relayFetch(
 						ui.notify(`relay ${shortRelayLabel(targetUrl)} failed (HTTP 404) — rolled to next relay`, "warning");
 					}
 				}
+				reportAbandoned("relay-edge-404", 404);
 				continue;
 			}
 			// Relay deployment disabled (402 DEPLOYMENT_DISABLED from Vercel):
@@ -522,6 +554,7 @@ export async function relayFetch(
 							ui.notify(`relay ${shortRelayLabel(targetUrl)} failed (HTTP 402) — rolled to next relay`, "warning");
 						}
 					}
+					reportAbandoned("deployment-disabled", 402);
 					continue;
 				}
 			}
@@ -544,6 +577,7 @@ export async function relayFetch(
 						{ upstream: url, status: 429 },
 						rid,
 					);
+					reportAbandoned("rate-limited", 429);
 					continue;
 				}
 				log(
@@ -561,6 +595,7 @@ export async function relayFetch(
 						ui.notify(`relay ${shortRelayLabel(targetUrl)} failed (HTTP ${res.status}) — rolled to next relay`, "warning");
 					}
 				}
+				reportAbandoned("retriable-status", res.status);
 				continue;
 			}
 
@@ -580,6 +615,7 @@ export async function relayFetch(
 						{ upstream: url, status: 500 },
 						rid,
 					);
+					reportAbandoned("server-error", 500);
 					continue;
 				}
 				// Second 500 of the turn: the cap is spent and this is the
@@ -652,6 +688,7 @@ export async function relayFetch(
 						);
 					}
 				}
+				reportAbandoned(authRejected ? "relay-auth-rejected" : "relay-forbidden", res.status);
 				continue;
 			}
 			// SUCCESS or non-retriable client error (e.g. 200, 404):
@@ -723,6 +760,7 @@ export async function relayFetch(
 				{ upstream: url, error: errMsg },
 				rid,
 			);
+			reportAbandoned((err as Error)?.name === "AbortError" ? "header-timeout" : "network-error");
 			continue;
 		}
 	}

@@ -320,18 +320,47 @@ test("F: buildProviderConfig emits the host-compatible provider contract", () =>
 		assert.equal(m.cost?.cacheWrite, 0);
 	}
 
- // known model: Cline responses model with a thinkingLevelMap
- const muse = cfg.models.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
-	assert.ok(muse, "muse model must be present");
-	assert.equal(muse!.reasoning, true);
-	assert.equal(muse!.api, "openai-responses");
-	assert.equal(muse!.thinking?.mode, "effort");
+ // No static entry declares a non-chat api since the responses lane's last
+ // model retired (Cline Muse Spark 1.3, 2026-10-22). The responses compat
+ // mapping stays wired for stale host registrations and future ids, so lock
+ // it with a synthetic model — same pattern as the messages passthrough in F2.
+	assert.equal(
+		cfg.models.some((m) => m.api !== undefined && m.api !== "openai-completions"),
+		false,
+		"no static model may declare a non-chat api",
+	);
+	const responsesCfg = buildProviderConfig(
+		[{
+			id: "flavor-fixture-responses",
+			name: "Flavor Fixture Responses",
+			reasoning: true,
+			contextWindow: 262_144,
+			maxTokens: 131_072,
+			api: "openai-responses",
+			input: ["text", "image"],
+			thinkingLevelMap: {
+				off: null,
+				minimal: "minimal",
+				low: "low",
+				medium: "medium",
+				high: "high",
+				xhigh: "xhigh",
+				max: null,
+			},
+			source: "cline",
+		}],
+		port,
+	);
+	const responsesModel = responsesCfg.models[0];
+	assert.ok(responsesModel);
+	assert.equal(responsesModel!.api, "openai-responses");
+	assert.equal(responsesModel!.thinking?.mode, "effort");
 	assert.ok(
-		Array.isArray(muse!.thinking?.efforts) && muse!.thinking!.efforts!.length > 0,
+		Array.isArray(responsesModel!.thinking?.efforts) && responsesModel!.thinking!.efforts!.length > 0,
 		"efforts must be derived from the non-null thinkingLevelMap",
 	);
-	assert.equal(muse!.compat?.sessionAffinityFormat, "openai-nosession");
-	assert.equal(muse!.compat?.supportsDeveloperRole, undefined);
+	assert.equal(responsesModel!.compat?.sessionAffinityFormat, "openai-nosession");
+	assert.equal(responsesModel!.compat?.supportsDeveloperRole, undefined);
 
 	// known model: Kilo model with thinkingFormat
 	const kilo = cfg.models.find((m) => m.id === "dots-studio/dots-3-note-preview:free");

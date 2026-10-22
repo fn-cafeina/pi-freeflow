@@ -41,7 +41,10 @@ const CHAT_MODEL: ModelDef = {
 
 const RESPONSES_MODEL: ModelDef = {
 	...CHAT_MODEL,
-	id: "cline-free/muse-spark-1.3-contributor",
+	// A synthetic responses-flavor model: the catalog's last real one (Cline
+	// Muse Spark 1.3) retired on 2026-10-22, and the probe shape must stay
+	// covered for any future entry.
+	id: "flavor-fixture-responses",
 	api: "openai-responses",
 };
 

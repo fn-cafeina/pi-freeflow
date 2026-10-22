@@ -16,9 +16,16 @@ import {
  WATCHDOG_SSE_MIN_SAMPLES,
  WATCHDOG_SSE_WINDOW,
 } from "./config.ts";
-import { cloakMessagesContent, looksLikeSse, type CaseRestoreMap, type FindGlobRestore } from "./opencode-fingerprint.ts";
+import {
+	accumulateToolCallName,
+	cloakMessagesContent,
+	looksLikeSse,
+	type CaseRestoreMap,
+	type FindGlobRestore,
+} from "./opencode-fingerprint.ts";
 import { restoreToolNameForCaller } from "./tool-translation.ts";
 import { repairToolArguments } from "./tool-args.ts";
+import type { ToolcallRepairSink, ToolcallStreamAudit } from "./toolcall-audit.ts";
 
 /**
  * A premature stream end counts as "substantial" only when BOTH thresholds
@@ -60,6 +67,29 @@ const TOOL_CALL_MARKERS = [
  "custom_tool_call_input",
  '"tool_calls"',
 ];
+// Same wire evidence for the tool-call audit gate, plus the Anthropic
+// argument-fragment event: those deltas carry no tool_use marker of their own
+// (the `content_block_start` did), yet the recorder needs every fragment to
+// classify the call, so they must reach observe() too.
+const AUDIT_TOOL_MARKERS = [...TOOL_CALL_MARKERS, '"type":"input_json_delta"'];
+// Turn-end frames carry the finish reason but no tool marker. They are the
+// only evidence a tool turn ended in plain text, so the audit gate must let
+// them through; matching the populated form (not the ubiquitous
+// `"finish_reason":null` delta) keeps the gate at one extra block per turn.
+const AUDIT_TURN_END_MARKERS = [
+ '"finish_reason":"stop"',
+ '"finish_reason":"tool_calls"',
+ '"finish_reason":"length"',
+ '"finish_reason":"content_filter"',
+ '"stop_reason":"end_turn"',
+ '"stop_reason":"tool_use"',
+ '"stop_reason":"max_tokens"',
+ '"stop_reason":"stop_sequence"',
+ '"response.completed"',
+ '"response.incomplete"',
+ '"response.failed"',
+];
+const AUDIT_MARKERS = [...AUDIT_TOOL_MARKERS, ...AUDIT_TURN_END_MARKERS];
 
 export function isSubstantial(chunks: number, bytes: number): boolean {
  return chunks > SUBSTANTIAL_MIN_CHUNKS && bytes > SUBSTANTIAL_MIN_BYTES;
@@ -332,6 +362,12 @@ export interface SseStreamCloakState {
  * assigned so far in this stream.
  */
  chatNextIndex: number;
+ /**
+ * Per-turn tool-call audit sink for the rewrites this state performs
+ * (index collisions, dropped name restatements, withheld arguments, repaired
+ * arguments). Absent when the caller did not request an audit.
+ */
+ audit?: ToolcallRepairSink;
 }
 
 /**
@@ -341,7 +377,11 @@ export interface SseStreamCloakState {
 export interface ChatTrackedCall {
  /** Never emit this call: injected placeholder, or a tool-less caller's call. */
  dropped: boolean;
- /** Restored host-facing name, set by (the latest) name-bearing delta. */
+ /**
+  * Restored host-facing name, folded from every name-bearing delta:
+  * fragments append, a delta that also carries arguments restates the whole
+  * name and replaces (see accumulateToolCallName).
+  */
  name: string | undefined;
  /**
  * True once a name-bearing delta decided this tool is repairable and its
@@ -371,8 +411,8 @@ function chatIndexKey(idx: number): string {
  return `idx:${idx}`;
 }
 
-export function createSseStreamCloakState(): SseStreamCloakState {
- return {
+export function createSseStreamCloakState(audit?: ToolcallRepairSink): SseStreamCloakState {
+ const state: SseStreamCloakState = {
   responsesDroppedByIndex: new Map(),
   responsesDroppedByItemId: new Map(),
   messagesDroppedByIndex: new Map(),
@@ -384,6 +424,8 @@ export function createSseStreamCloakState(): SseStreamCloakState {
   chatIndexClaims: new Map(),
   chatNextIndex: 0,
  };
+ if (audit !== undefined) state.audit = audit;
+ return state;
 }
 
 /**
@@ -407,11 +449,13 @@ export function flushBufferedToolArgs(
   const blocks: string[] = [];
   for (const [index, args] of state.messagesArgsByIndex) {
    const name = state.messagesNameByIndex.get(index) ?? "";
+   const repaired = repairToolArguments(name, args, cloak.argSchemas);
+   if (repaired !== args) state.audit?.repair("arguments-repaired", name);
    blocks.push(
     `event: content_block_delta\ndata: ${JSON.stringify({
      type: "content_block_delta",
      index,
-     delta: { type: "input_json_delta", partial_json: repairToolArguments(name, args, cloak.argSchemas) },
+     delta: { type: "input_json_delta", partial_json: repaired },
     })}\n\n`,
    );
   }
@@ -430,7 +474,9 @@ export function flushBufferedToolArgs(
   call.flushed = true;
   call.buffered = false;
   call.args = "";
-  calls.push({ index: call.hostIndex, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } });
+  const repairedArgs = repairToolArguments(name, args, cloak.argSchemas);
+  if (repairedArgs !== args) state.audit?.repair("arguments-repaired", name);
+  calls.push({ index: call.hostIndex, type: "function", function: { name, arguments: repairedArgs } });
  }
  if (calls.length === 0) return null;
  return `data: ${JSON.stringify({ object: "chat.completion.chunk", choices: [{ index: 0, delta: { tool_calls: calls } }] })}\n\n`;
@@ -539,7 +585,10 @@ function rewriteResponsesBlock(
     if (typeof parsed.output_index === "number") state.responsesNameByIndex.set(parsed.output_index, restored);
     if (type === "response.output_item.done") {
      rec.name = restored;
-     rec.arguments = repairToolArguments(restored, typeof rec.arguments === "string" ? rec.arguments : "", cloak.argSchemas);
+     const originalArgs = typeof rec.arguments === "string" ? rec.arguments : "";
+     const repairedArgs = repairToolArguments(restored, originalArgs, cloak.argSchemas);
+     if (repairedArgs !== originalArgs) state.audit?.repair("arguments-repaired", restored);
+     rec.arguments = repairedArgs;
      return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
     }
     if (restored !== rec.name) {
@@ -564,6 +613,7 @@ function rewriteResponsesBlock(
    if (name !== undefined) {
     const repairedArgs = repairToolArguments(name, parsed.arguments, cloak.argSchemas);
     if (repairedArgs !== parsed.arguments) {
+     state.audit?.repair("arguments-repaired", name);
      parsed.arguments = repairedArgs;
      return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
     }
@@ -658,6 +708,9 @@ function chatTrackedCall(
  } else {
   call = { dropped: false, name: undefined, buffered: false, args: "", hostIndex: state.chatNextIndex++, flushed: false };
   state.chatIndexClaims.set(call.hostIndex, key);
+  // Audit: two tracked calls claimed one upstream index; the host index was
+  // re-homed sequentially so the wire stays well-formed.
+  state.audit?.repair("parallel-index-collision", `idx:${idx}`);
  }
  state.chatCalls.set(key, call);
  return { call, key, idx };
@@ -724,7 +777,9 @@ function flushChatTerminalToolCalls(
   const args = call.args;
   call.args = "";
   flushedKeys.add(key);
-  const entry = { index: call.hostIndex, type: "function", function: { name, arguments: repairToolArguments(name, args, cloak.argSchemas) } };
+  const repairedArgs = repairToolArguments(name, args, cloak.argSchemas);
+  if (repairedArgs !== args) state.audit?.repair("arguments-repaired", name);
+  const entry = { index: call.hostIndex, type: "function", function: { name, arguments: repairedArgs } };
   flushedEntries.add(entry);
   flushed.push(entry);
  }
@@ -839,22 +894,45 @@ function rewriteChatBlock(
      continue;
     }
     const restored = restoreStreamName(name, cloak);
-    if (restored !== name && fnRec) {
+    // Fold this delta's name into the call's accumulated name: a name-only
+    // delta is a fragment (append), a delta that ALSO carries arguments
+    // restates the whole name (replace) — same rule as the aggregate cloak,
+    // see accumulateToolCallName. When the restated name is the one the host
+    // already holds, it is dropped from the wire instead of re-sent: the host
+    // concatenates streamed name deltas, so a second copy would hand it
+    // `get_weatherget_weather`.
+    const previousName = call.name;
+    const hasArgs = fnRec !== null && typeof fnRec.arguments === "string" && fnRec.arguments !== "";
+    const toolName = accumulateToolCallName(previousName, restored, hasArgs);
+    const nameRepeated = hasArgs && previousName !== undefined && toolName === previousName;
+    call.name = toolName;
+    if (nameRepeated && fnRec) {
+     delete fnRec.name;
+     changed = true;
+     // Audit: the upstream restated a name the host already holds; the copy
+     // was kept off the wire so the host does not concatenate it.
+     state.audit?.repair("name-restated", toolName);
+    } else if (restored !== name && fnRec) {
      fnRec.name = restored;
      changed = true;
     }
     call.dropped = false;
-    call.name = restored;
-    if (isRepairableTool(restored, cloak.argSchemas) && !call.flushed && !flushedKeys.has(key)) {
+    if (isRepairableTool(toolName, cloak.argSchemas) && !call.flushed && !flushedKeys.has(key)) {
      // Hold this call's arguments: the packet is only judgeable once whole,
      // so it is re-emitted repaired on the terminal finish_reason chunk.
      // Reset-then-absorb mirrors the old per-index buffer exactly.
+     if (!call.buffered) state.audit?.repair("arguments-buffered", toolName);
      call.buffered = true;
      call.args = "";
      if (fnRec && typeof fnRec.arguments === "string" && fnRec.arguments !== "") {
       call.args = fnRec.arguments;
       delete fnRec.arguments;
       changed = true;
+     }
+     if (nameRepeated && fnRec && Object.keys(fnRec).length === 0) {
+      // Repeat header whose name and arguments both moved elsewhere: the
+      // delta has nothing left to tell the host.
+      continue;
      }
      kept.push(tc);
      if (chatRewriteDeltaIndex(rec, call)) changed = true;
@@ -986,6 +1064,7 @@ function rewriteMessagesBlock(
     rec.name = restored;
     state.messagesNameByIndex.set(index, restored);
     if (isRepairableTool(restored, cloak.argSchemas)) {
+     if (!state.messagesArgsByIndex.has(index)) state.audit?.repair("arguments-buffered", restored);
      state.messagesArgsByIndex.set(index, typeof rec.input === "string" ? rec.input : "");
     }
     return emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
@@ -1015,10 +1094,12 @@ function rewriteMessagesBlock(
   const name = state.messagesNameByIndex.get(index) ?? "";
   state.messagesArgsByIndex.delete(index);
   state.messagesNameByIndex.delete(index);
+  const repaired = repairToolArguments(name, buffered, cloak.argSchemas);
+  if (repaired !== buffered) state.audit?.repair("arguments-repaired", name);
   const flushed: Record<string, unknown> = {
    type: "content_block_delta",
    index,
-   delta: { type: "input_json_delta", partial_json: repairToolArguments(name, buffered, cloak.argSchemas) },
+   delta: { type: "input_json_delta", partial_json: repaired },
   };
   const stopBlock = emitSseBlock(event, JSON.stringify(parsed), hadEventPrefix);
   return `${emitSseBlock("content_block_delta", JSON.stringify(flushed), true)}\n\n${stopBlock}`;
@@ -1089,6 +1170,14 @@ export interface StreamPipeOptions {
   * upstream omitted it; the pipe then classifies the buffered start itself.
   */
  upstreamContentType?: string | null;
+ /**
+  * Per-turn tool-call audit recorder (see toolcall-audit.ts). `observe` gets
+  * every forwarded SSE block that carries a tool marker — cloaked and
+  * bypassed streams alike, after any rewrite; `finish` is idempotent and the
+  * pipe calls it exactly once per turn (raw non-SSE bodies finish with
+  * `terminal: false`). Cloak rewrites also report through its `repair`.
+  */
+ audit?: ToolcallStreamAudit;
 }
 /**
  * Pipes an upstream readable stream to a client HTTP response.
@@ -1142,7 +1231,17 @@ export function pipeUpstreamStream(
  // `end` already ran; `close` always trails it on a later tick).
  let refirePending = false;
  // Streaming cloak: per-stream rewrite state (null = byte-identical passthrough).
- const cloakState = cloak && !shouldBypassStreamCloak(cloak) ? createSseStreamCloakState() : null;
+ // The repair sink is wrapped because a throwing sink must never drop a chunk.
+ const auditRepairs = opts?.audit
+  ? {
+    repair: (kind: string, detail?: string): void => {
+     try {
+      opts.audit!.repair(kind, detail);
+     } catch { }
+    },
+   }
+  : undefined;
+ const cloakState = cloak && !shouldBypassStreamCloak(cloak) ? createSseStreamCloakState(auditRepairs) : null;
  // Holds the trailing incomplete SSE block across chunks; complete blocks are
  // rewritten and forwarded, so a function_call name split across chunks still
  // matches its injected record.
@@ -1176,6 +1275,19 @@ export function pipeUpstreamStream(
  };
  // One-shot resume guard: the refire hook below fires at most once per turn.
  let refireUsed = false;
+ // Tool-call audit completion: exactly one finish per turn. A normal stream
+ // reports from both `end` and `close`, and a rescue hands the turn to a
+ // replacement stream — the guard keeps the report single (the recorder is
+ // idempotent; an external sink need not be).
+ let auditFinished = false;
+ const finishAudit = (terminal: boolean, unclassifiable = false): void => {
+  if (auditFinished) return;
+  auditFinished = true;
+  // An external sink must never change what the client receives.
+  try {
+   opts?.audit?.finish(unclassifiable ? { terminal, unclassifiable: true } : { terminal });
+  } catch { }
+ };
 
  // Body-stall watchdog: after response headers a streaming body has no fixed
  // total deadline (See relay.ts: the per-attempt timer is headers-only).
@@ -1257,7 +1369,12 @@ export function pipeUpstreamStream(
   chunk: string | Buffer,
   reason: "model" | "rate_limit",
  ): boolean => {
-  if (refirePending || heldFailureChunk !== null || sawToolCall) return false;
+  if (refirePending || heldFailureChunk !== null || sawToolCall) {
+   // Audit: the only veto worth recording is the tool-turn one — a resume
+   // would regenerate calls the host already received.
+   if (sawToolCall) opts?.audit?.refireSkipped();
+   return false;
+  }
   if (clientAborted || refireUsed || !opts?.refire || res.writableEnded || res.destroyed) return false;
   refireUsed = true;
   refirePending = true;
@@ -1339,6 +1456,10 @@ export function pipeUpstreamStream(
    try {
     if (!res.writableEnded) res.end();
    } catch { }
+   // The cut stream's own end/close may already have passed while this
+   // rescue was in flight, so completion is reported here instead (idempotent
+   // across the later close).
+   finishAudit(hasTerminalEvent);
    return;
   }
   heldFailureChunk = null;
@@ -1426,6 +1547,17 @@ export function pipeUpstreamStream(
    hasTerminalEvent = true;
   }
   terminalScanCarry = Buffer.from(scanBuf.subarray(Math.max(0, scanBuf.length - 32)));
+  // Per-turn tool-call audit: hand over the EXACT forwarded bytes of any block
+  // that carries a tool call (chat deltas, responses items, messages
+  // tool_use + argument fragments) or a populated turn-end marker (so a tool
+  // turn that ended in plain text records its finish reason). The recorder
+  // parses the block itself, so plain text/reasoning blocks are never copied.
+  // Dropped blocks returned before this point and are therefore never observed.
+  if (opts?.audit !== undefined && AUDIT_MARKERS.some((m) => text.includes(m))) {
+   try {
+    opts.audit.observe(text);
+   } catch { }
+  }
   deliver(text);
  };
  const sseBoundary = /\r?\n\r?\n/;
@@ -1486,6 +1618,11 @@ export function pipeUpstreamStream(
  const tryRefire = async (): Promise<boolean> => {
   if (clientAborted || refireUsed || !opts?.refire) return false;
   if (sawToolCall) {
+   // Audit: the resume budget was not spent because the turn already
+   // forwarded tool calls (a regeneration would duplicate them).
+   try {
+    opts?.audit?.refireSkipped();
+   } catch { }
    log("debug", "mid-stream refire skipped: turn already forwarded tool calls", { totalChunks, totalBytes }, rid);
    return false;
   }
@@ -1660,6 +1797,9 @@ export function pipeUpstreamStream(
    if (!res.writableEnded) {
     res.end();
    }
+   // Audit completion: no terminal SSE event was forwarded on this path (or
+   // one was, before the error); a rescue returned above and owns the report.
+   finishAudit(hasTerminalEvent);
   } catch { }
  };
 
@@ -1681,6 +1821,10 @@ export function pipeUpstreamStream(
    try {
     if (!res.writableEnded) res.end();
    } catch { }
+   // Audit: a raw (non-SSE) body carries no event stream to inspect, so the
+   // turn is not classifiable: the summary says `remap: "unknown"` rather
+   // than accusing the model of answering without tools.
+   finishAudit(false, true);
    log(
     "debug",
     `non-SSE upstream body passed through verbatim — ${totalChunks} chunks (${(totalBytes / 1024).toFixed(1)}KB)`,
@@ -1767,6 +1911,8 @@ export function pipeUpstreamStream(
   try {
    if (!res.writableEnded) res.end();
   } catch { }
+  // Audit completion for the turn (idempotent; `close` trails this call).
+  finishAudit(hasTerminalEvent);
  };
 
  const onClose = async (): Promise<void> => {
@@ -1821,6 +1967,11 @@ export function pipeUpstreamStream(
     }
    }
    if (!res.writableEnded) res.end();
+   // Audit completion: `end` normally already reported (the guard makes this
+   // a no-op then); a socket death or rescue teardown reports from here. Raw
+   // (non-SSE) bodies carry no event stream, so they are never terminal and
+   // never classifiable (`remap: "unknown"`).
+   finishAudit(bodyGate === "sse" && hasTerminalEvent, bodyGate !== "sse");
   } catch { }
  };
  const watch = (s: Readable): void => {

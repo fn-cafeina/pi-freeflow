@@ -37,7 +37,7 @@ import {
 	UPDATE_CACHE_FILE,
 	ONBOARDED_FLAG_FILE,
 } from "../src/config.ts";
-import { ALL_MODELS, KILO_MODEL_IDS } from "../src/models.ts";
+import { ALL_MODELS, KILO_MODEL_IDS, OVH_MODELS } from "../src/models.ts";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -394,6 +394,23 @@ test("model reasoning replay flags pass through independently of model name and 
 			const config = buildProviderConfig([model]);
 			assert.equal(config.models[0].compat?.requiresReasoningContentOnAssistantMessages, required);
 		}
+	}
+});
+
+test("F1: OVH models pin the plain openai thinking format and clear the Qwen template flag", () => {
+	// The host classifies the loopback proxy as a local OpenAI-compatible
+	// backend before the spec overrides land. For `Qwen3.x` ids that means
+	// `thinkingFormat: "qwen"` and `qwenPreserveThinking: true`, which makes
+	// the request carry `chat_template_kwargs` — OVH answers
+	// `400 feature 'extra arguments: …' is not currently supported`.
+	const cfg = buildProviderConfig(
+		OVH_MODELS.map((m) => ({ ...m, source: "ovh" as const })),
+		29751,
+	);
+	assert.equal(cfg.models.length, 8, "the OVH lane registers eight models");
+	for (const model of cfg.models) {
+		assert.equal(model.compat?.thinkingFormat, "openai", `${model.id} must not ride the Qwen template dialect`);
+		assert.equal(model.compat?.qwenPreserveThinking, false, `${model.id} must not set preserve_thinking`);
 	}
 });
 

@@ -699,6 +699,15 @@ async function handleOvhRequest(opts: {
  // Lane quirks, keyed by canonical catalog id so an alias resolves to the same
  // model (the wire id above has already lost its `ovh-free/` prefix).
  const canonicalModelId = resolveCanonicalModelId(requestedModel);
+ // OVH's OpenAI-compatible surface rejects Qwen chat-template controls
+ // (`400 feature 'extra arguments: {"chat_template_kwargs":…}' is not
+ // currently supported`). The host classifies this loopback proxy as a local
+ // OpenAI-compatible backend, treats `Qwen3.x` models as template-dialect
+ // Qwen and injects them; the lane has no such feature. Strip defensively so
+ // no host version can leak them upstream.
+ delete chatBody.chat_template_kwargs;
+ delete chatBody.enable_thinking;
+ delete chatBody.preserve_thinking;
  if (canonicalModelId === OVH_NO_EFFORT_MODEL) {
   // Measured 2026-10-22: with `reasoning_effort` present this model answers
   // HTTP 200 whose body is a bare `data: [DONE]` — no deltas, no error — at

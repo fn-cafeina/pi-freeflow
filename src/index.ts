@@ -153,15 +153,32 @@ export function buildProviderConfig(
      }
      : m.api === "openai-responses"
       ? { sessionAffinityFormat: "openai-nosession" }
-      : m.source === "kilo" || m.source === "cline" || m.source === "ovh"
+      : m.source === "kilo" || m.source === "cline"
        ? {
         supportsDeveloperRole: false,
         supportsReasoningEffort: !!m.thinkingLevelMap,
        }
-       : {
-        supportsDeveloperRole: false,
-        supportsReasoningEffort: true,
-       }),
+       // OVH is a plain OpenAI chat endpoint. Without an explicit format the
+       // host sees the loopback proxy URL, classifies the lane as a local
+       // backend and treats `Qwen3.x` ids as template-dialect Qwen, emitting
+       // `chat_template_kwargs` that OVH rejects with
+       // `400 feature 'extra arguments: ...' is not currently supported`.
+       // Pin the format so the host sends `reasoning_effort` instead.
+       : m.source === "ovh"
+        ? {
+         supportsDeveloperRole: false,
+         supportsReasoningEffort: !!m.thinkingLevelMap,
+         thinkingFormat: "openai",
+         // The host derives these two from the loopback base URL before the
+         // spec override lands: `thinkingFormat` is overridden above, but
+         // `qwenPreserveThinking` was already latched on and still emits
+         // `chat_template_kwargs.preserve_thinking`. Clear it explicitly.
+         qwenPreserveThinking: false,
+        }
+        : {
+         supportsDeveloperRole: false,
+         supportsReasoningEffort: true,
+        }),
      ...(m.requiresReasoningContentOnAssistantMessages !== undefined
       ? { requiresReasoningContentOnAssistantMessages: m.requiresReasoningContentOnAssistantMessages }
       : {}),

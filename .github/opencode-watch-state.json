@@ -1,9 +1,9 @@
 {
-  "lastRelease": "v1.19.3",
+  "lastRelease": "v1.19.4",
   "fileShas": {
     "identifier.ts": "77fc45a0401f03877521a6219e9691377e882a628826cc1489d51bc389c2f2fc",
     "session-id.ts": "ae484a090640a6ed93946ad4fb621545f446b66dcb36d66f6ce0163ca7f1d1f7",
-    "zen.mdx": "5b8a02c3ada0db6d147ad3abb0c475270906a2e4d15ca7e59b432758dbe9bade"
+    "zen.mdx": "51586ea2882e8720083d8daa5b4502d38cf11045a9c66a0f60e30848a57ef9d8"
   },
   "freeModels": [
     "beam-free",
@@ -13,9 +13,8 @@
     "glm-5.3-flash-free",
     "jev-1.13-free",
     "mimo-v2.6-flash-free",
-    "minimax-m3.1-flash-free",
     "nemotron-3.5-lightning-free",
     "nemotron-3.5-super-vl-free"
   ],
-  "lastChecked": "2026-10-22T09:17:50.309Z"
+  "lastChecked": "2026-10-23T09:13:16.044Z"
 }

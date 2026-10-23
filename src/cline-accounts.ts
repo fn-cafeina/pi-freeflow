@@ -166,7 +166,19 @@ interface ClineFreeLimit {
  resetAt?: number;
 }
 
-const CLINE_FREE_LIMIT_MARKER = /free limit reached on model/i;
+const CLINE_FREE_LIMIT_MARKER = /(?:free limit reached on model|Daily limit reached for)/i;
+
+/**
+ * Extract epoch reset from X-RateLimit-Reset if present in headers or metadata.
+ * Converts epoch seconds (<1e11) to ms.
+ */
+function parseXRateLimitReset(text: string): number | null {
+ const m = text.match(/X-RateLimit-Reset[\\"\s:]+([0-9.]+)/i);
+ if (!m) return null;
+ const val = Number(m[1]);
+ if (!Number.isFinite(val) || val <= 0) return null;
+ return val < 1e11 ? Math.round(val * 1000) : Math.round(val);
+}
 
 /**
  * Delay stated as `try again in <N>h <N>m`, `<N>m`, or a bare `<N>` (hours).
@@ -191,13 +203,15 @@ function parseResetDelayMs(text: string): number | null {
  */
 export function parseClineFreeLimit(raw: string, now = Date.now()): ClineFreeLimit | null {
  if (typeof raw !== "string" || !CLINE_FREE_LIMIT_MARKER.test(raw)) return null;
- const named = raw.match(/free limit reached on model\s+(\S+)/i);
+ const named = raw.match(/(?:free limit reached on model|Daily limit reached for)\s+([^\\"\s,;]+)/i);
  // The model name ends the sentence, so a trailing "." belongs to the prose.
  const modelId = named ? named[1].replace(/[.,;:]+$/, "") : "";
- const delay = parseResetDelayMs(raw);
+ const epochReset = parseXRateLimitReset(raw);
+ const delay = epochReset !== null ? null : parseResetDelayMs(raw);
+ const resetAt = epochReset !== null ? epochReset : delay !== null ? now + delay : undefined;
  return {
   ...(modelId ? { modelId } : {}),
-  ...(delay !== null ? { resetAt: now + delay } : {}),
+  ...(resetAt !== undefined ? { resetAt } : {}),
  };
 }
 
@@ -895,6 +909,82 @@ function exhaustedResponse(reason: string, status: number): Response {
 }
 
 /**
+ * For OpenRouter-backed Cline models, Cline sometimes answers HTTP 200
+ * `text/event-stream` where the first event is an in-stream 429 error
+ * (e.g. `stream_initialization_failed` with status 429 / daily limit reached).
+ * Peek the first chunk: if it is an in-stream 429 error, convert it to a 429
+ * Response so rollChat rolls to the next slot; otherwise, reconstruct the
+ * stream with the peeked chunk re-enqueued.
+ */
+async function peekStreamForInStreamError(res: Response): Promise<{ res: Response; inStreamError: boolean; errorText: string }> {
+ const contentType = res.headers.get("content-type") || "";
+ if (!contentType.includes("text/event-stream") || !res.body) {
+  return { res, inStreamError: false, errorText: "" };
+ }
+ try {
+  const reader = res.body.getReader();
+  const { done, value } = await reader.read();
+  if (done || !value || value.byteLength === 0) {
+   return {
+    res: new Response(null, { status: res.status, statusText: res.statusText, headers: res.headers }),
+    inStreamError: false,
+    errorText: "",
+   };
+  }
+  const text = new TextDecoder().decode(value);
+  const isInStream429 = (
+   text.includes('"stream_initialization_failed"') ||
+   text.includes('"error":') ||
+   text.includes('"Rate limit exceeded"') ||
+   text.includes("Daily limit reached")
+  ) && (
+   text.includes("429") ||
+   /status["\s:]+429/i.test(text) ||
+   /Rate limit exceeded/i.test(text) ||
+   /Daily limit reached/i.test(text)
+  );
+
+  if (isInStream429) {
+   try { await reader.cancel(); } catch { }
+   const errRes = new Response(text, {
+    status: 429,
+    headers: { "content-type": "application/json" },
+   });
+   return { res: errRes, inStreamError: true, errorText: text };
+  }
+
+  const reconstructed = new ReadableStream<Uint8Array>({
+   start(controller) {
+    controller.enqueue(value);
+   },
+   async pull(controller) {
+    try {
+     const { done: nextDone, value: nextValue } = await reader.read();
+     if (nextDone) {
+      controller.close();
+     } else if (nextValue) {
+      controller.enqueue(nextValue);
+     }
+    } catch (err) {
+     controller.error(err);
+    }
+   },
+   cancel(reason) {
+    return reader.cancel(reason);
+   },
+  });
+
+  return {
+   res: new Response(reconstructed, { status: res.status, statusText: res.statusText, headers: res.headers }),
+   inStreamError: false,
+   errorText: "",
+  };
+ } catch {
+  return { res, inStreamError: false, errorText: "" };
+ }
+}
+
+/**
  * POST one chat body to the Cline endpoint, rolling across every saved slot.
  * Each attempt sends its slot bearer explicitly; raw tokens never leave this
  * module. Superseded failure bodies are cancelled here; the response handed
@@ -1028,6 +1118,14 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   };
   let res = await attempt(account.token);
   if (!res) continue;
+  let inStreamLimitText: string | null = null;
+  if (res.status === 200 && res.headers.get("content-type")?.includes("text/event-stream")) {
+   const peek = await peekStreamForInStreamError(res);
+   res = peek.res;
+   if (peek.inStreamError) {
+    inStreamLimitText = peek.errorText;
+   }
+  }
   let kind = mapClineError(res.status);
   if (kind === "ok" || kind === "client") return await succeed(res, kind);
   // Auth failure on a refreshable slot that has not refreshed yet: one
@@ -1057,7 +1155,7 @@ export async function rollChat(opts: ClineRollOpts): Promise<ClineRollResult> {
   // for the requested model until the stated reset: remember it, so the next
   // turn tries the other logins first.
   if (res.status === 429) {
-   const limit = await freeLimitFrom(res, now);
+   const limit = inStreamLimitText ? parseClineFreeLimit(inStreamLimitText, now) : await freeLimitFrom(res, now);
    if (limit) {
     cappedSlots.add(account.slot);
     if (limit.modelId) limitModelId = limit.modelId;

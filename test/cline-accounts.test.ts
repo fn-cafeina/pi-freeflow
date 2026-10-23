@@ -980,3 +980,52 @@ test("command: /freeflow cline logout offers a picker for several logins", async
   assert.deepEqual(loadPool().accounts.map((a) => a.slot), ["second"]);
  });
 });
+test("parseClineFreeLimit: parses OpenRouter daily limit and X-RateLimit-Reset", () => {
+	const body = 'data: {"error":{"code":"stream_initialization_failed","message":"Failed to create stream: provider request failed with status 429: {\\"error\\":{\\"message\\":\\"Rate limit exceeded: limit_rpd/acc-123. Daily limit reached for thinkingmachines/inkling:free. Try again tomorrow.\\",\\"code\\":429,\\"metadata\\":{\\"headers\\":{\\"X-RateLimit-Limit\\":\\"1000\\",\\"X-RateLimit-Remaining\\":\\"0\\",\\"X-RateLimit-Reset\\":\\"1729728000\\"}}}}"}}\n\n';
+	const parsed = parseClineFreeLimit(body);
+	assert.ok(parsed, "in-stream OpenRouter daily limit must be recognized");
+	assert.equal(parsed.modelId, "thinkingmachines/inkling:free");
+	assert.equal(parsed.resetAt, 1729728000000);
+});
+
+test("rollChat: rolls past a 200 text/event-stream containing an in-stream 429 error to the next slot", async () => {
+	await withIsolatedPool(async () => {
+		addAccount("a", SLOT_A);
+		addAccount("b", SLOT_B);
+		const seen: string[] = [];
+		const futureSec = Math.round((Date.now() + 3600_000) / 1000);
+		const inStream429Body = `data: {"error":{"code":"stream_initialization_failed","message":"Failed to create stream: provider request failed with status 429: {\\"error\\":{\\"message\\":\\"Rate limit exceeded: limit_rpd/acc-123. Daily limit reached for thinkingmachines/inkling:free.\\",\\"code\\":429,\\"metadata\\":{\\"headers\\":{\\"X-RateLimit-Reset\\":\\"${futureSec}\\"}}}}"}}\n\n`;
+		const res = await rollChat({
+			body: JSON.stringify({ model: "thinkingmachines/inkling:free", stream: true }),
+			chatUrl: "https://api.cline.bot/api/v1/chat/completions",
+			fetchImpl: (async (url: unknown, init: unknown) => {
+				const auth = new Headers((init as RequestInit).headers).get("authorization") ?? "";
+				seen.push(auth);
+				if (auth.endsWith(SLOT_A.slice(-6))) {
+					// Slot A answers 200 text/event-stream, but the first event is 429
+					return new Response(inStream429Body, {
+						status: 200,
+						headers: { "content-type": "text/event-stream" },
+					});
+				}
+				// Slot B succeeds with normal SSE stream
+				return new Response('data: {"choices":[{"delta":{"content":"OK"}}]}\n\n', {
+					status: 200,
+					headers: { "content-type": "text/event-stream" },
+				});
+			}) as typeof fetch,
+		});
+
+		assert.equal(res.slot, "b", "must roll past slot A to slot B");
+		assert.equal(res.exhausted, false);
+		assert.equal(res.res.status, 200);
+		assert.equal(seen.length, 2, "both slots must be tried in order");
+		const text = await res.res.text();
+		assert.ok(text.includes('"content":"OK"'), "peeked valid stream must preserve its content");
+
+		// Also verify slot A had its limit recorded on disk
+		_resetClinePoolCacheForTest();
+		const pool = loadPool();
+		assert.ok(pool.limits?.["a"]?.["thinkingmachines/inkling:free"], "slot A must have limit recorded on disk");
+	});
+});

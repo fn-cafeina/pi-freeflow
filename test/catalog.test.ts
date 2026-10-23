@@ -100,7 +100,7 @@ test("refreshCatalog passes an abortable timeout signal and falls back instead o
  * can hold as many entries as the static set while still missing this id.
  */
 const STATIC_IDS_ABSENT_FROM_LEGACY_CACHE = [
-	"z-ai/glm-5.3-flash",
+	"cline/nemotron-3.5-super-vl",
 ];
 
 /** Persist a catalog cache fixture; ageMs > TTL makes it stale (hidden from readCatalogCache). */

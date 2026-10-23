@@ -54,10 +54,10 @@ test("no static model declares the responses api (the last one retired 2026-10-2
  // api repair in edges-catalog.test.ts).
  assert.equal(ALL_MODELS.filter((m) => m.api === "openai-responses").length, 0);
  assert.equal(getModelDef("cline-free/muse-spark-1.3-contributor"), undefined, "the retired Cline id must not resolve");
- const glm = getModelDef("z-ai/glm-5.3-flash");
- assert.ok(glm, "the surviving Cline model must resolve");
- assert.equal(glm?.api, undefined, "the surviving Cline model is chat completions");
- assert.equal(glm?.contextWindow, 1_048_576);
+ const clineModel = getModelDef("cline/nemotron-3.5-super-vl");
+ assert.ok(clineModel, "the surviving Cline model must resolve");
+ assert.equal(clineModel?.api, undefined, "the surviving Cline model is chat completions");
+ assert.equal(clineModel?.contextWindow, 1_000_000);
 });
 
 test("1M context window models are properly configured", () => {
@@ -65,7 +65,7 @@ test("1M context window models are properly configured", () => {
  // model in the catalog advertising >= 1M must be in that known list
  // (drift guard — no unaccounted-for 1M models).
 	const oneMillionModels = [
-		"z-ai/glm-5.3-flash",
+		"cline/nemotron-3.5-super-vl",
 		"glm-5.3-flash-free",
 		"mimo-v2.6-flash-free",
 		"beam-free",
@@ -405,7 +405,7 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   // convention (prompt and output share the window).
   "xingchen-agi/xing4.0-29b-a4b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
-  "z-ai/glm-5.3-flash": { ctx: 1_048_576, max: 131_072, reasoning: true },
+  "cline/nemotron-3.5-super-vl": { ctx: 1_000_000, max: 131_072, reasoning: true },
   // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
   // advertised windows (the lane hard-caps there); max is the highest
   // published output below the window. OVH's max_completion_tokens echoes the
@@ -548,6 +548,12 @@ test("cat-jam-free is retired and cannot re-enter the catalog (2026-10-24)", () 
 	assert.equal(MODEL_MAP.get("cat-jam-free"), undefined, "cat-jam-free must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "cat-jam-free"), false, "cat-jam-free must not be in ALL_MODELS");
 	assert.ok(DEAD_MODEL_IDS.has("cat-jam-free"), "cat-jam-free must be dead-listed so stale caches and upstream merges cannot revive it");
+});
+
+test("z-ai/glm-5.3-flash is retired from the free catalog (2026-10-24)", () => {
+	assert.equal(MODEL_MAP.get("z-ai/glm-5.3-flash"), undefined, "z-ai/glm-5.3-flash must not be in MODEL_MAP");
+	assert.equal(ALL_MODELS.some((m) => m.id === "z-ai/glm-5.3-flash"), false, "z-ai/glm-5.3-flash must not be in ALL_MODELS");
+	assert.ok(DEAD_MODEL_IDS.has("z-ai/glm-5.3-flash"), "z-ai/glm-5.3-flash must be dead-listed");
 });
 
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {

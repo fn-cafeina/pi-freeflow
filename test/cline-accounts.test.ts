@@ -19,6 +19,13 @@ import {
  removeAccount,
  rollChat,
  savePool,
+ BUNDLED_CLINE_VERSION,
+ getClineVersion,
+ getClineClientHeaders,
+ refreshClineVersion,
+ keepClineTokensAlive,
+ clineUpstreamModelId,
+ _resetLiveClineVersionForTest,
 } from "../src/cline-accounts.ts";
 import { CLINE_BROWSER_SIGNOUT_URL } from "../src/cline-device-auth.ts";
 import { createCommandSpec } from "../src/commands.ts";
@@ -1028,4 +1035,78 @@ test("rollChat: rolls past a 200 text/event-stream containing an in-stream 429 e
 		const pool = loadPool();
 		assert.ok(pool.limits?.["a"]?.["thinkingmachines/inkling:free"], "slot A must have limit recorded on disk");
 	});
+});
+
+test("getClineVersion: resolves bundled default, env override, and disk cache", async () => {
+	_resetLiveClineVersionForTest();
+	assert.equal(getClineVersion(), BUNDLED_CLINE_VERSION);
+
+	// Env override
+	process.env.PI_FREEFLOW_CLINE_VERSION = "5.0.0";
+	assert.equal(getClineVersion(), "5.0.0");
+	delete process.env.PI_FREEFLOW_CLINE_VERSION;
+	_resetLiveClineVersionForTest();
+
+	// Headers construction
+	const headers = getClineClientHeaders();
+	assert.equal(headers["X-CLIENT-TYPE"], "cline-desktop");
+	assert.equal(headers["X-CLIENT-VERSION"], BUNDLED_CLINE_VERSION);
+	assert.equal(headers["User-Agent"], `Cline/${BUNDLED_CLINE_VERSION}`);
+});
+
+test("refreshClineVersion: fetches version from upstream and writes disk cache", async () => {
+	_resetLiveClineVersionForTest();
+	const mockFetch = async () => new Response(JSON.stringify({ version: "4.2.0" }), { status: 200 });
+	const ver = await refreshClineVersion(mockFetch as unknown as typeof fetch);
+	assert.equal(ver, "4.2.0");
+	assert.equal(getClineVersion(), "4.2.0");
+	_resetLiveClineVersionForTest();
+});
+
+test("keepClineTokensAlive: proactively refreshes tokens nearing expiry and pings models endpoint", async () => {
+	await withIsolatedPool(async () => {
+		// Add account expiring in 5 minutes (below 30min threshold)
+		const expiringAt = Date.now() + 5 * 60 * 1000;
+		addAccount("a", SLOT_A);
+		const pool = loadPool();
+		pool.accounts[0].refreshToken = "refresh-token-123";
+		pool.accounts[0].expiresAt = expiringAt;
+		savePool(pool);
+
+		let refreshCalled = false;
+		let probeCalled = false;
+		const mockRefresher = async (rt: string) => {
+			refreshCalled = true;
+			assert.equal(rt, "refresh-token-123");
+			return { token: "workos:new-token-456", refreshToken: "refresh-new-456", expiresAt: Date.now() + 3600 * 1000 };
+		};
+		const mockFetch = async (url: unknown) => {
+			probeCalled = true;
+			assert.ok(String(url).includes("/models"));
+			return new Response("{}", { status: 200 });
+		};
+
+		const result = await keepClineTokensAlive({
+			fetchImpl: mockFetch as unknown as typeof fetch,
+			refreshImpl: mockRefresher,
+		});
+
+		assert.equal(refreshCalled, true, "refresher must be called for expiring token");
+		assert.equal(probeCalled, true, "probe must be called to warm the session");
+		assert.equal(result.refreshed, 1);
+		assert.equal(result.probed, 1);
+
+		// Verify disk pool updated with fresh token
+		_resetClinePoolCacheForTest();
+		const updated = loadPool();
+		assert.equal(updated.accounts[0].token, "workos:new-token-456");
+		assert.equal(updated.accounts[0].refreshToken, "refresh-new-456");
+	});
+});
+
+test("clineUpstreamModelId: strips cline/ and cline-free/ prefixes", () => {
+	assert.equal(clineUpstreamModelId("cline/nemotron-3.5-super-vl"), "nvidia/nemotron-3.5-super-vl:free");
+	assert.equal(clineUpstreamModelId("cline/recursive/flint-v1.0:free"), "recursive/flint-v1.0:free");
+	assert.equal(clineUpstreamModelId("cline/dots-studio/dots-3-note-preview:free"), "dots-studio/dots-3-note-preview:free");
+	assert.equal(clineUpstreamModelId("openrouter/free"), "openrouter/free");
 });

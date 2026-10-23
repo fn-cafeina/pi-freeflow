@@ -564,22 +564,6 @@ export const KILO_MODELS: ModelDef[] = [
 ];
 
 /**
- * Narrow effort map for the Cline model in the catalog (GLM 5.3 Flash) — the
- * reference reasoningOptions list effort values [low, high, max] only (no
- * toggle on GLM); minimal/medium/xhigh are not offered so the host never
- * sends an unsupported level (the proxy forwards effort verbatim).
- */
-const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
- off: null,
- minimal: null,
- low: "low",
- medium: null,
- high: "high",
- xhigh: null,
- max: "max",
-};
-
-/**
  * Cline free models (per-user local pool — https://api.cline.bot).
  * Direct-only: never served through the relay pool. IDs are Cline-native
  * and collision-free against the OpenCode/Kilo catalogs (the Kilo-routed
@@ -593,13 +577,21 @@ const CLINE_FLASH_REASONING_MAP: ThinkingLevelMap = {
  */
 export const CLINE_MODELS: ModelDef[] = [
  {
-  id: "z-ai/glm-5.3-flash",
-  name: "GLM 5.3 Flash [Cline]",
+  id: "cline/nemotron-3.5-super-vl",
+  name: "Nemotron 3.5 Super VL [Cline]",
   reasoning: true,
- contextWindow: 1_048_576,
+  contextWindow: 1_000_000,
   maxTokens: 131_072,
- input: ["text", "image"],
-  thinkingLevelMap: CLINE_FLASH_REASONING_MAP,
+  input: ["text", "image"],
+  thinkingLevelMap: {
+   off: null,
+   minimal: "minimal",
+   low: "low",
+   medium: "medium",
+   high: "high",
+   xhigh: "xhigh",
+   max: null,
+  },
  },
 ];
 
@@ -609,7 +601,7 @@ export const CLINE_MODELS: ModelDef[] = [
  * populated reasoning stream). minimal/medium/xhigh/max were not confirmed,
  * so they map to null and the picker never offers them. `minimal` must be an
  * explicit null, not an omitted key: omitting it leaves the level selectable
- * in the host. Same shape as CLINE_FLASH_REASONING_MAP.
+ * in the host.
  */
 const OVH_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -804,6 +796,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 "qwen3.8-27b": "ovh-free/Qwen3.8-27B",
 "mistral-small-3.2": "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",
 "llama-3.3-70b": "ovh-free/Meta-Llama-3_3-70B-Instruct",
+"cline-super-vl": "cline/nemotron-3.5-super-vl",
 };
 
 /**

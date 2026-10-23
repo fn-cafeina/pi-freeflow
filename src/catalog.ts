@@ -178,6 +178,10 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // multiple independent runs, while sibling OpenCode models (deepseek, mimo,
  // nemotron) answer 200 on the same request shapes.
  "cat-jam-free",
+ // z-ai/glm-5.3-flash: retired from the Cline free catalog (2026-10-24) — paid
+ // model that drains account credits and answers HTTP 402 insufficient_credits.
+ // Replaced with Cline's verified working free tier model.
+ "z-ai/glm-5.3-flash",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.

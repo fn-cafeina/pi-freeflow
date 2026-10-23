@@ -68,7 +68,7 @@ test("relay worker sources keep the whitelist contract on every platform", () =>
 		["cloudflare", buildCloudflareRelayWorker(TEST_AUTH)],
 		["deno", buildDenoRelayScript(TEST_AUTH)],
 	] as const) {
-		assert.match(src, /\["https:\/\/opencode\.ai", "https:\/\/api\.kilo\.ai"\]/);
+		assert.match(src, /\["https:\/\/opencode\.ai", "https:\/\/api\.kilo\.ai", "https:\/\/oai\.endpoints\.kepler\.ai\.cloud\.ovh\.net"\]/);
 		assert.match(src, /x-relay-target/);
 		assert.match(src, /x-relay-path/);
 		assert.match(src, /charAt\(0\) !== "\/"/, `${label}: bad-path guard`);

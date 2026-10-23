@@ -25,7 +25,8 @@ test("aliases deduplicated and wrong removed", () => {
  assert.equal(resolveCanonicalModelId("nemotron-3.5-lightning"), "nvidia/nemotron-3.5-lightning:free");
  assert.equal(resolveCanonicalModelId("deepseek-v4.1-flash"), "deepseek-v4.1-flash-free");
  assert.equal(isKiloModel("dots-3-note-preview"), true);
-	assert.equal(Object.keys(MODEL_ALIASES).length, 30);
+ assert.equal(resolveCanonicalModelId("cline-super-vl"), "cline/nemotron-3.5-super-vl");
+	assert.equal(Object.keys(MODEL_ALIASES).length, 31);
 });
 
 test("log rotation 10MB x10", () => {
@@ -33,17 +34,18 @@ test("log rotation 10MB x10", () => {
  assert.equal(LOG_MAX_FILES, 10);
 });
 
-test("ALLOWED_TARGETS exact 2", () => {
+test("ALLOWED_TARGETS exact 3", () => {
  for (const w of [VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT]) {
   const matches = (w.match(/ALLOWED_TARGETS/g) || []).length;
   assert.ok(matches >= 1, "missing ALLOWED_TARGETS");
   assert.ok(w.includes('https://opencode.ai'), "missing opencode.ai");
   assert.ok(w.includes('https://api.kilo.ai'), "missing api.kilo.ai");
-  // ensure only 2 entries
+  assert.ok(w.includes('https://oai.endpoints.kepler.ai.cloud.ovh.net'), "missing ovh target");
+  // ensure only 3 entries
   const m = w.match(/ALLOWED_TARGETS\s*=\s*\[(.*?)\]/s);
   if (m) {
    const count = (m[1].match(/https:\/\//g) || []).length;
-   assert.equal(count, 2, "ALLOWED_TARGETS must be exactly 2");
+   assert.equal(count, 3, "ALLOWED_TARGETS must be exactly 3");
   }
  }
 });

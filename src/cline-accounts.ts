@@ -16,7 +16,8 @@ import { writeFileAtomic } from "./atomic-write.ts";
 import { RELAY_STATE_FILE } from "./config.ts";
 import { logWarn } from "./logger.ts";
 import type { FetchImpl } from "./cline-device-auth.ts";
-import { isWorkosJwt } from "./cline-device-auth.ts";
+import { isWorkosJwt, refreshClineToken, toApiKey } from "./cline-device-auth.ts";
+import { fetchWithSystemCA } from "./system-ca-fetch.ts";
 
 /** Env override for the pool file location (tests/CI sandbox). */
 const CLINE_POOL_FILE_ENV = "PI_FREEFLOW_CLINE_POOL_FILE";
@@ -115,38 +116,183 @@ export function _resetClinePoolCacheForTest(): void {
  cachedMtime = -1;
 }
 
-/** Version this proxy reports as its Cline client build. */
-const CLINE_CLIENT_VERSION = "3.5.54";
+/** Bundled fallback version if dynamic fetch and disk cache are absent. */
+export const BUNDLED_CLINE_VERSION = "4.1.25";
+export const CLINE_CLIENT_VERSION = BUNDLED_CLINE_VERSION;
+
+const CLINE_VERSION_TTL_MS = 24 * 60 * 60 * 1000;
+let liveClineVersion: string | null = null;
+
+function clineVersionCachePath(): string {
+ return path.join(path.dirname(CLINE_POOL_FILE), "pi-freeflow-cline-version.json");
+}
+
+export function _resetLiveClineVersionForTest(): void {
+ liveClineVersion = null;
+}
 
 /**
- * Client headers the Cline API expects. Measured live (2026-09-21): the
- * `cline-free/*` models answer 403 "only available via Cline product surfaces"
- * with a bare bearer, and 200 with this set; every non-prefixed catalog model
- * (e.g. z-ai/glm-5.3-flash) answers 200 either way. Header names and shape
- * mirror reference/cline providers/request-headers.ts
- * (DEFAULT_CLINE_REQUEST_HEADERS) — no credential is derived from them.
- *
- * `X-CLIENT-TYPE` is the Cline desktop app's identity, and it gates the
- * `cline-free/*` id space (measured live 2026-09-22: that prefix answers 403
- * "only available via Cline product surfaces" with a bare bearer, and 200 with
- * this set; every non-prefixed id answers 200 either way). The header is kept
- * because `cline-free/*` ids can still appear in a stale host registration —
- * until 2026-10-13 that prefix covered four models, and
- * `cline-free/muse-spark-1.3-contributor` survived it until 2026-10-22. It also
- * decided the free-model feed at the time: five entries for
- * `cline-sdk` / `cline-cli` / the `VSCode Extension` label against six for
- * `cline-desktop`, the extra one being `cline-free/kimi-k3`. That sixth model
- * is retired upstream and no longer requested. Version and User-Agent stay
- * as-is: the feed served the desktop list with them unchanged.
+ * Resolve effective Cline client version. Precedence:
+ * env override (PI_FREEFLOW_CLINE_VERSION) > in-memory version > fresh disk cache > BUNDLED_CLINE_VERSION.
  */
-const CLINE_CLIENT_HEADERS: Record<string, string> = {
- "HTTP-Referer": "https://cline.bot",
- "X-Title": "Cline",
- "X-IS-MULTIROOT": "false",
- "X-CLIENT-TYPE": "cline-desktop",
- "X-CLIENT-VERSION": CLINE_CLIENT_VERSION,
- "User-Agent": `Cline/${CLINE_CLIENT_VERSION}`,
-};
+export function getClineVersion(): string {
+ const override = process.env.PI_FREEFLOW_CLINE_VERSION?.trim();
+ if (override) return override;
+ if (liveClineVersion) return liveClineVersion;
+ try {
+  const cachePath = clineVersionCachePath();
+  if (fs.existsSync(cachePath)) {
+   const data = JSON.parse(fs.readFileSync(cachePath, "utf8")) as { version?: string; checkedAt?: number };
+   if (typeof data.version === "string" && data.version.trim() && typeof data.checkedAt === "number" && Date.now() - data.checkedAt < CLINE_VERSION_TTL_MS) {
+    liveClineVersion = data.version.trim();
+    return liveClineVersion;
+   }
+  }
+ } catch { }
+ return BUNDLED_CLINE_VERSION;
+}
+
+/**
+ * Client headers the Cline API expects, evaluated dynamically with the current version.
+ */
+export function getClineClientHeaders(): Record<string, string> {
+ const ver = getClineVersion();
+ return {
+  "HTTP-Referer": "https://cline.bot",
+  "X-Title": "Cline",
+  "X-IS-MULTIROOT": "false",
+  "X-CLIENT-TYPE": "cline-desktop",
+  "X-CLIENT-VERSION": ver,
+  "User-Agent": `Cline/${ver}`,
+ };
+}
+
+/**
+ * Proxy object for CLINE_CLIENT_HEADERS providing full backward compatibility.
+ */
+export const CLINE_CLIENT_HEADERS: Record<string, string> = new Proxy({} as Record<string, string>, {
+ get(_target, prop) {
+  return getClineClientHeaders()[prop as string];
+ },
+ has(_target, prop) {
+  return prop in getClineClientHeaders();
+ },
+ ownKeys(_target) {
+  return Object.keys(getClineClientHeaders());
+ },
+ getOwnPropertyDescriptor(_target, prop) {
+  const val = getClineClientHeaders()[prop as string];
+  return val !== undefined ? { value: val, writable: false, enumerable: true, configurable: true } : undefined;
+ },
+});
+
+/**
+ * Refresh the live Cline version from open-vsx or GitHub releases and persist to disk.
+ */
+export async function refreshClineVersion(fetchImpl: FetchImpl = fetchWithSystemCA): Promise<string> {
+ try {
+  const res = await fetchImpl("https://open-vsx.org/api/saoudrizwan/claude-dev", {
+   headers: { "User-Agent": "pi-freeflow" },
+   signal: AbortSignal.timeout(5000),
+  });
+  if (res.ok) {
+   const data = (await res.json()) as { version?: string };
+   if (typeof data.version === "string" && /^\d+\.\d+\.\d+/.test(data.version)) {
+    liveClineVersion = data.version.trim();
+    try {
+     const cachePath = clineVersionCachePath();
+     writeFileAtomic(cachePath, JSON.stringify({ version: liveClineVersion, checkedAt: Date.now() }));
+    } catch { }
+    return liveClineVersion;
+   }
+  }
+ } catch { }
+ return getClineVersion();
+}
+async function defaultClineRefresher(refreshToken: string): Promise<ClineRefreshResult | null> {
+ try {
+  const creds = await refreshClineToken(undefined, refreshToken);
+  return { token: toApiKey(creds.access), refreshToken: creds.refresh, expiresAt: creds.expires };
+ } catch {
+  return null;
+ }
+}
+/**
+ * Background auto-probing & keep-alive for Cline account tokens.
+ * Proactively refreshes tokens nearing expiry (<30 min remaining or expired)
+ * so that saved accounts never lapse into unrecoverable dead grants.
+ * Also performs a lightweight ping to verify the account is active.
+ */
+export async function keepClineTokensAlive(
+ opts: {
+  fetchImpl?: FetchImpl;
+  refreshImpl?: ClineRefresher;
+ } = {},
+): Promise<{ refreshed: number; probed: number }> {
+ const pool = loadPool();
+ if (pool.accounts.length === 0) return { refreshed: 0, probed: 0 };
+ const fetchImpl = opts.fetchImpl ?? fetchWithSystemCA;
+ const refreshImpl = opts.refreshImpl ?? defaultClineRefresher;
+ const now = Date.now();
+ const REFRESH_THRESHOLD_MS = 30 * 60 * 1000;
+ let refreshed = 0;
+ let probed = 0;
+
+ for (const account of pool.accounts) {
+  if (!account.refreshToken) continue;
+  const isExpiringSoon = typeof account.expiresAt === "number" && (account.expiresAt - now < REFRESH_THRESHOLD_MS);
+  const isExpired = typeof account.expiresAt === "number" && account.expiresAt <= now;
+  const needsRefresh = isExpiringSoon || isExpired || isClineTokenStale(account);
+
+  if (needsRefresh) {
+   try {
+    const outcome = await refreshAccountInPlace(account, refreshImpl);
+    if (outcome === true) {
+     refreshed += 1;
+    }
+   } catch {
+    continue;
+   }
+  }
+
+  // Light probe: ping models endpoint with light timeout to keep the session warm
+  try {
+   const token = account.token;
+   const probeRes = await fetchImpl("https://api.cline.bot/api/v1/models", {
+    method: "GET",
+    headers: {
+     ...getClineClientHeaders(),
+     authorization: `Bearer ${token}`,
+    },
+    signal: AbortSignal.timeout(6000),
+   });
+   if (probeRes.ok) {
+    probed += 1;
+   }
+  } catch { }
+ }
+
+ return { refreshed, probed };
+}
+
+export const CLINE_MODEL_PREFIX = "cline/";
+
+/**
+ * Maps a catalog Cline model ID to the exact wire model ID expected by Cline API.
+ */
+export function clineUpstreamModelId(id: string): string {
+ const trimmed = id.trim();
+ if (trimmed === "cline/nemotron-3.5-super-vl") {
+  return "nvidia/nemotron-3.5-super-vl:free";
+ }
+ if (trimmed.startsWith(CLINE_MODEL_PREFIX)) {
+  return trimmed.slice(CLINE_MODEL_PREFIX.length);
+ }
+ if (trimmed.startsWith("cline-free/")) {
+  return trimmed.slice("cline-free/".length);
+ }
+ return trimmed;
+}
 
 /**
  * Free-limit report carried by a Cline 429 body, e.g.

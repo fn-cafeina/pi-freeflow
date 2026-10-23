@@ -23,8 +23,8 @@ import { randomBytes } from "node:crypto";
  *   auth gate (legacy/manual deploys); built-in deploys always embed one.
  */
 function buildRelayWorkerCore(relayAuth: string): string {
- return String.raw`// Only the 2 upstreams pi-freeflow talks to. Anything else = open proxy abuse.
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+ return String.raw`// Upstreams pi-freeflow talks to. Anything else = open proxy abuse.
+const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai", "https://oai.endpoints.kepler.ai.cloud.ovh.net"];
 const RELAY_AUTH = ${JSON.stringify(relayAuth)};
 const resolveRelayTarget = function(target, relayPath) {
   let targetUrl;

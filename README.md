@@ -275,10 +275,11 @@ Each account can only be saved once: an extra login for an account you already h
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `z-ai/glm-5.3-flash` | Zhipu AI | **1M** (1.048.576) | **131K** (131.072) | `low/high/max` | ✅ |
+| `cline-super-vl` (`cline/nemotron-3.5-super-vl`) | NVIDIA | **1M** (1.000.000) | **131K** (131.072) | `minimal … xhigh` | ✅ |
+
 #### OVHcloud AI Endpoints (8 models), OpenAI compatible
 
-Anonymous access — no account, no key, nothing to sign in to. Direct only (never through the relay pool), because OVH has no per-IP gate for relays to route around. OVH rate-limits anonymous callers per IP, so a burst of parallel subagents can hit `429 API rate limit exceeded`; the model list itself never costs anything.
+Anonymous access — no account, no key, nothing to sign in to. When the relay pool is armed, OVH requests route through your relays to bypass the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct.
 
 Pick them with the slash-free short name (the full ID is in parentheses). The lane's rows publish `low`/`medium`/`high`; the 3.6 and 3.8 Qwens add `minimal`, and nothing on this lane offers `xhigh`/`max`.
 All eight talk the normal chat API. Hosts that prefer the responses API work too — the proxy maps that shape to chat and maps the answer back, so tool calls and streamed output behave exactly as they do on the other providers.

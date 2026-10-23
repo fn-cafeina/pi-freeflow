@@ -1024,13 +1024,13 @@ test("a sanitized tool name round-trips through a full streamed response", () =>
 test("chatResponsesSseFromChatCompletion emits response.output_text.delta so UI never sees blank reply", () => {
 	const chat = {
 		id: "chatcmpl_test",
-		model: "z-ai/glm-5.3-flash",
+		model: "cline/nemotron-3.5-super-vl",
 		choices: [{
 			message: { role: "assistant", content: "Hello from Cline!" },
 			finish_reason: "stop",
 		}],
 	};
-	const resp = chatResponsesJsonFromChatCompletion(chat, "z-ai/glm-5.3-flash");
+	const resp = chatResponsesJsonFromChatCompletion(chat, "cline/nemotron-3.5-super-vl");
 	const sse = chatResponsesSseFromChatCompletion(resp);
 	assert.ok(sse.includes("event: response.output_text.delta"), "must emit response.output_text.delta");
 	assert.ok(sse.includes("Hello from Cline!"), "must carry the assistant text");
@@ -1041,13 +1041,13 @@ test("chatResponsesSseFromChatCompletion emits response.output_text.delta so UI 
 test("chatResponsesSseFromChatCompletion frames the message item so hosts keep the text", () => {
 	const chat = {
 		id: "chatcmpl_frames",
-		model: "z-ai/glm-5.3-flash",
+		model: "cline/nemotron-3.5-super-vl",
 		choices: [{
 			message: { role: "assistant", content: "Hello from Cline!" },
 			finish_reason: "stop",
 		}],
 	};
-	const resp = chatResponsesJsonFromChatCompletion(chat, "z-ai/glm-5.3-flash");
+	const resp = chatResponsesJsonFromChatCompletion(chat, "cline/nemotron-3.5-super-vl");
 
 	const frames = chatResponsesSseFromChatCompletion(resp)
 		.split("\n\n")

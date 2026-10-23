@@ -224,13 +224,13 @@ test("E2E [5/10] ensureDaemon seamlessly rebinds when active daemon process is t
 
 test("E2E [6/10] model catalog accurately maps thinking formats and source routing", () => {
  // Canonical resolution
- assert.equal(resolveCanonicalModelId("z-ai/glm-5.3-flash"), "z-ai/glm-5.3-flash");
+ assert.equal(resolveCanonicalModelId("cline-super-vl"), "cline/nemotron-3.5-super-vl");
 	assert.equal(resolveCanonicalModelId("beam-free"), "beam-free");
 	assert.equal(resolveCanonicalModelId("mimo-v2.6-flash-free"), "mimo-v2.6-flash-free");
 
  // Kilo models identification
  assert.equal(isKiloModel("dots-3-note-preview"), true);
- assert.equal(isKiloModel("z-ai/glm-5.3-flash"), false);
+ assert.equal(isKiloModel("cline/nemotron-3.5-super-vl"), false);
 
  // ProviderConfig format verification. The catalog carries no
  // `openai-responses` entry since Cline's Muse Spark 1.3 retired (2026-10-22),

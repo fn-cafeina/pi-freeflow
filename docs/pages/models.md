@@ -80,11 +80,11 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
-| `z-ai/glm-5.3-flash` | 1,048,576 | 131,072 | low, high, max | ✅ |
+| `cline/nemotron-3.5-super-vl` | 1,000,000 | 131,072 | minimal..xhigh | ✅ |
 
 ### OVHcloud AI Endpoints (8 models)
 
-Anonymous access: no account, no key, no login step. Direct only, never through the relay pool — there is no per-IP gate for a relay to route around. OVH does rate-limit anonymous callers, so parallel subagents can hit `429 API rate limit exceeded` per IP. The `ovh-free/` prefix namespaces the lane in the picker; upstream only ever sees the part after the slash, which is case-sensitive.
+Anonymous access: no account, no key, no login step. When the relay pool is armed, OVH requests route through your relays to bypass the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct. The `ovh-free/` prefix namespaces the lane in the picker; upstream only ever sees the part after the slash, which is case-sensitive.
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |

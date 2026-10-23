@@ -210,7 +210,7 @@ test("stale cache without etag drops the retired Cline Muse Spark entry (issue #
   const spark = result.find((m) => m.id === "cline-free/muse-spark-1.3-contributor");
   assert.equal(spark, undefined, "the retired Cline entry must not survive a stale cache");
   assert.ok(
-   result.some((m) => m.id === "z-ai/glm-5.3-flash"),
+   result.some((m) => m.id === "cline/nemotron-3.5-super-vl"),
    "the surviving Cline model must still come from the static base",
   );
   assert.equal(result.some((m) => m.id === "claude-fable-5-1"), false, "paid ids must be purged");
@@ -319,9 +319,9 @@ test("sanitizeCatalogModels repairs a stale Cline row against its static definit
  // carry a wrong api on the surviving Cline model. The static definition is
  // authoritative: the stale `openai-responses` label must be replaced by the
  // static chat row, and a retired id must never be repaired back into life.
- const staleGlm = {
-  id: "z-ai/glm-5.3-flash",
-  name: "GLM 5.3 Flash (1M)",
+ const staleNemotron = {
+  id: "cline/nemotron-3.5-super-vl",
+  name: "Nemotron 3.5 Super VL (1M)",
   reasoning: false,
   contextWindow: 128_000,
   maxTokens: 4_096,
@@ -339,11 +339,11 @@ test("sanitizeCatalogModels repairs a stale Cline row against its static definit
   input: ["text", "image"] as ["text", "image"],
   source: "cline" as const,
  };
- const merged = mergeCatalog([], [staleGlm, retiredSpark]);
- assert.deepEqual(merged.map((m) => m.id), ["z-ai/glm-5.3-flash"], "the retired Cline id must be purged");
+ const merged = mergeCatalog([], [staleNemotron, retiredSpark]);
+ assert.deepEqual(merged.map((m) => m.id), ["cline/nemotron-3.5-super-vl"], "the retired Cline id must be purged");
  assert.equal(merged[0].api, undefined, "the stale responses label must not survive the static chat definition");
- assert.equal(merged[0].name, "GLM 5.3 Flash [Cline]", "the static display name wins");
- assert.equal(merged[0].contextWindow, 1_048_576);
+ assert.equal(merged[0].name, "Nemotron 3.5 Super VL [Cline]", "the static display name wins");
+ assert.equal(merged[0].contextWindow, 1_000_000);
  assert.equal(merged[0].maxTokens, 131_072);
  assert.equal(merged[0].reasoning, true);
  assert.equal(merged[0].source, "cline");

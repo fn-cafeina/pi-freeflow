@@ -494,7 +494,7 @@ test("proxy e2e: kilo path bypass leaves caller tools untouched", async () => {
 	assert.deepEqual(JSON.parse(clientBody), JSON.parse(kiloJson));
 });
 
-const CLINE_MODEL = "z-ai/glm-5.3-flash";
+const CLINE_MODEL = "cline/nemotron-3.5-super-vl";
 
 test("proxy e2e: cline responses path reshapes tools with zero fingerprint", async () => {
 	// Cline bypass (observable contract): a Cline-model request never carries

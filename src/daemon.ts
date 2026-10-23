@@ -31,7 +31,7 @@ import {
  stopLeaseGC,
  touchActivity,
 } from "./lease.ts";
-import { getActiveRequests, startProxy } from "./proxy.ts";
+import { getActiveRequests, startClineKeepAlive, startProxy } from "./proxy.ts";
 import { loadRelayState, setActiveRelayState } from "./relay-state.ts";
 
 /** True when this module was run as the entry script (not imported by tests). */
@@ -122,6 +122,7 @@ async function runDaemon(): Promise<void> {
  touchActivity();
  syncRelayStateFromDisk();
  void seedCatalog();
+ startClineKeepAlive();
 
  // Retire only when zero leases persist past the grace window with nothing
  // in flight — never for request-idleness.

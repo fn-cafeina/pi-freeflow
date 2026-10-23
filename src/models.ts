@@ -1,8 +1,8 @@
 /**
  * Static model definitions and upstream routing catalogs for pi-freeflow
  *
- * Defines the 35 verified free models (live-verified 2026-10-22):
- * - 11 OpenCode Zen models (all Chat Completions)
+ * Defines the 34 verified free models (live-verified 2026-10-24):
+ * - 10 OpenCode Zen models (all Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
  * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
@@ -34,32 +34,6 @@ import type { ModelDef, ThinkingLevelMap, Upstream } from "./types.ts";
  */
 export const OPENCODE_MODELS: ModelDef[] = [
  {
-  id: "cat-jam-free",
-  name: "Cat Jam [OpenCode]",
-  reasoning: true,
-  // Confirmed 2026-10-20: the endpoint refuses a 1.05M-token prompt with
-  // "maximum context length is 1048576 tokens", and a 900,337-token needle
-  // probe recalled correctly. The earlier ~250K miss was recall, not
-  // truncation.
-  contextWindow: 1_048_576,
-  maxTokens: 131_072,
-  input: ["text"],
-  // Effort ladder live-probed 2026-10-16: the gateway enumerates
-  // max/xhigh/high/medium/low as the supported set for this model — a probe
-  // with `minimal`, `none`, or a bogus value answers 400 naming exactly
-  // that list, and `max` answers 200 with a populated reasoning stream. So
-  // `max` is a real level here, not a silent clamp.
-  thinkingLevelMap: {
-   off: null,
-   minimal: null,
-   low: "low",
-   medium: "medium",
-   high: "high",
-   xhigh: "xhigh",
-   max: "max",
-  },
- },
- {
   id: "mimo-v2.6-flash-free",
   name: "MiMo V2.6 Flash [OpenCode]",
   reasoning: true,
@@ -70,7 +44,7 @@ export const OPENCODE_MODELS: ModelDef[] = [
   // a caller sees above the lane's cap.
   contextWindow: 1_048_576,
   maxTokens: 131_072,
- input: ["text", "image"],
+  input: ["text"],
   thinkingLevelMap: {
    off: null,
    minimal: "low",

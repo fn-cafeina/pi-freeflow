@@ -172,6 +172,12 @@ export const DEAD_MODEL_IDS = new Set<string>([
  // PAID minimax/minimax-m3.1-flash. No short alias exists for it: a short name
  // must never route to a paid model.
  "minimax/minimax-m3.1-flash:free",
+ // cat-jam-free: retired upstream (2026-10-24) — every request path
+ // (chat non-stream, chat stream, and responses) through the relay pool answers
+ // persistent HTTP 404 "Upstream request failed: Endpoint is unavailable." across
+ // multiple independent runs, while sibling OpenCode models (deepseek, mimo,
+ // nemotron) answer 200 on the same request shapes.
+ "cat-jam-free",
 ]);
 /**
  * Free-tier allowlist for anything entering the picker via network or stale disk.

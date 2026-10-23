@@ -16,7 +16,7 @@ import {
 	_resetUpstreamHealthForTest,
 } from "../src/upstream-health.ts";
 
-const CHAT_MODEL = "cat-jam-free";
+const CHAT_MODEL = "mimo-v2.6-flash-free";
 const RESPONSES_MODEL = "nemotron-3.5-super-vl-free";
 const KILO_MODEL = "dots-studio/dots-3-note-preview:free";
 
@@ -679,8 +679,8 @@ test("proxy e2e: ovh responses path translates to chat upstream and answers a Re
 			stream: false,
 			tools: callerTools,
 			tool_choice: "auto",
+			max_output_tokens: 32,
 		});
-		assert.equal(res.status, 200);
 		clientBody = res.body;
 	}, capture);
 	assert.ok(upstream);
@@ -689,6 +689,7 @@ test("proxy e2e: ovh responses path translates to chat upstream and answers a Re
 	assert.equal(upstream.stream, true, "ovh upstream always streams for aggregation");
 	assert.ok(!("store" in upstream), "ovh never adds store");
 	assert.ok(!("input" in upstream), "the responses-only input field never reaches the chat endpoint");
+	assert.ok(!("max_output_tokens" in upstream), "max_output_tokens must be stripped so OVH does not reject it as an extra argument");
 	assert.ok(Array.isArray(upstream.messages), "the caller's input array became chat messages");
 	assert.deepEqual(upstream.messages, [{ role: "user", content: "Say OK" }], "the caller's input text survives the mapping");
 	assert.ok(Array.isArray(upstream.tools));

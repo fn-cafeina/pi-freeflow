@@ -7,13 +7,13 @@ import { VERCEL_RELAY_WORKER, CLOUDFLARE_RELAY_WORKER, DENO_RELAY_SCRIPT } from 
 import { isSubstantial } from "../src/stream-pipe.ts";
 import { loadRelayCore } from "./_relay-core.ts";
 
-test("catalog 35 = 11 OpenCode + 15 Kilo + 1 Cline + 8 OVH", () => {
-	assert.equal(OPENCODE_MODELS.length, 11);
+test("catalog 34 = 10 OpenCode + 15 Kilo + 1 Cline + 8 OVH", () => {
+	assert.equal(OPENCODE_MODELS.length, 10);
 	assert.equal(KILO_MODELS.length, 15);
 	assert.equal(CLINE_MODELS.length, 1);
 	assert.equal(OVH_MODELS.length, 8);
-	assert.equal(ALL_MODELS.length, 35);
-	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 35);
+	assert.equal(ALL_MODELS.length, 34);
+	assert.equal(new Set(ALL_MODELS.map((m) => m.id)).size, 34);
 });
 
 test("aliases deduplicated and wrong removed", () => {

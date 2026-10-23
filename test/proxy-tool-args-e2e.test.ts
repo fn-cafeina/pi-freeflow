@@ -14,7 +14,7 @@ import {
 import { startProxy } from "../src/proxy.ts";
 import { authHeaders } from "./_auth.ts";
 
-const CHAT_MODEL = "cat-jam-free";
+const CHAT_MODEL = "mimo-v2.6-flash-free";
 const RESPONSES_MODEL = "nemotron-3.5-super-vl-free";
 
 /** The malformation reproduced live from the free models (see tool-args-repair). */

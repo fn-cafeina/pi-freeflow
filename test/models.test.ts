@@ -67,7 +67,6 @@ test("1M context window models are properly configured", () => {
 	const oneMillionModels = [
 		"z-ai/glm-5.3-flash",
 		"glm-5.3-flash-free",
-		"cat-jam-free",
 		"mimo-v2.6-flash-free",
 		"beam-free",
 		"deepseek-v4.1-flash-free",
@@ -116,7 +115,7 @@ test("2026-09-22 and 2026-09-28 additions route to the correct upstream with ver
  assert.equal(mimo.contextWindow, 1_048_576);
  assert.equal(mimo.maxTokens, 131_072);
  assert.equal(mimo.reasoning, true);
- assert.deepEqual(mimo.input, ["text", "image"]);
+	assert.deepEqual(mimo.input, ["text"]);
  assert.equal(mimo.thinkingLevelMap?.minimal, "low");
  assert.equal(mimo.thinkingLevelMap?.xhigh, "high");
  assert.equal(getModelUpstream("mimo-v2.6-flash-free"), "opencode");
@@ -328,10 +327,6 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
  // datasheet check or a new boundary/recall probe.
  const locked: Record<string, { ctx: number; max: number; reasoning: boolean }> = {
   // OpenCode Zen
-  // Datasheet: 1,048,576 ctx (models.dev opencode/opencode-go + Vercel twin);
-  // 131,072 output. Endpoint refuses 1.05M; a 900,337-token needle probe
-  // recalled. Effort ladder low..max per the free and paid datasheets.
-  "cat-jam-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
   // Built-in catalog spec: 1,048,576 ctx / 131,072 output. The free lane's
   // runtime cap is ~348K; the catalog follows the model's highest spec.
   "mimo-v2.6-flash-free": { ctx: 1_048_576, max: 131_072, reasoning: true },
@@ -463,17 +458,7 @@ test("2026-10-15 Zen DeepSeek V4.1 Flash carries probe-measured specs", () => {
  assert.equal(getModelUpstream("deepseek-v4.1-flash-free"), "opencode");
 });
 
-test("2026-10-16 issue #62: cat-jam exposes the live max effort; Nemotron 3.5 Super VL is a locked static entry", () => {
- // (a) cat-jam-free: the gateway accepts reasoning_effort "max" (200 with a
- // populated reasoning stream) and rejects minimal/none/bogus with a 400 that
- // enumerates max/xhigh/high/medium/low as the supported set. A null `max`
- // in the map hid a real, selectable level from the picker.
- const catJam = getModelDef("cat-jam-free");
- assert.ok(catJam);
- assert.equal(catJam.thinkingLevelMap?.max, "max", "max is accepted upstream and must be selectable");
- assert.equal(catJam.thinkingLevelMap?.xhigh, "xhigh");
- assert.equal(catJam.thinkingLevelMap?.minimal, null, "minimal 400s upstream and must stay hidden");
-
+test("2026-10-16 issue #62: Nemotron 3.5 Super VL is a locked static entry", () => {
  // (b) nemotron-3.5-super-vl-free: on the live Zen free list but absent from
  // the static catalog, so the dynamic merge registered it through the
  // enrichModelDef heuristic — reasoning:false, no effort map, no picker levels.
@@ -557,6 +542,12 @@ test("cline-free/muse-spark-1.3-contributor is retired and cannot re-enter the c
 	assert.equal(MODEL_MAP.get("cline-free/muse-spark-1.3-contributor"), undefined, "the retired Cline id must not be in MODEL_MAP");
 	assert.equal(ALL_MODELS.some((m) => m.id === "cline-free/muse-spark-1.3-contributor"), false, "the retired Cline id must not be in ALL_MODELS");
 	assert.ok(DEAD_MODEL_IDS.has("cline-free/muse-spark-1.3-contributor"), "the retired id must be dead-listed so stale caches and upstream merges cannot revive it");
+});
+
+test("cat-jam-free is retired and cannot re-enter the catalog (2026-10-24)", () => {
+	assert.equal(MODEL_MAP.get("cat-jam-free"), undefined, "cat-jam-free must not be in MODEL_MAP");
+	assert.equal(ALL_MODELS.some((m) => m.id === "cat-jam-free"), false, "cat-jam-free must not be in ALL_MODELS");
+	assert.ok(DEAD_MODEL_IDS.has("cat-jam-free"), "cat-jam-free must be dead-listed so stale caches and upstream merges cannot revive it");
 });
 
 test("2026-10-13 OVH lane: every id routes to the ovh upstream, never Zen", () => {

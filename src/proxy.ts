@@ -707,7 +707,12 @@ async function handleOvhRequest(opts: {
  // no host version can leak them upstream.
  delete chatBody.chat_template_kwargs;
  delete chatBody.enable_thinking;
- delete chatBody.preserve_thinking;
+delete chatBody.preserve_thinking;
+// OVH's OpenAI-compatible surface rejects Responses-native caps (`400 feature
+// 'extra arguments: {"max_output_tokens":…}' is not currently supported`)
+// when a responses-path request was translated via chatBodyFromResponsesBody.
+// Strip defensively so the cap is not passed as an unknown extra argument.
+delete chatBody.max_output_tokens;
  if (canonicalModelId === OVH_NO_EFFORT_MODEL) {
   // Measured 2026-10-22: with `reasoning_effort` present this model answers
   // HTTP 200 whose body is a bare `data: [DONE]` — no deltas, no error — at

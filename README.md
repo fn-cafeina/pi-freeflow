@@ -1,6 +1,6 @@
 # pi-freeflow
 
-> 35 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
+> 34 free models with up to 1M context. No API keys to manage. Add your own relays to spread requests across more IPs.
 
 Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handles thinking, normalization, and provider behavior.
 
@@ -16,7 +16,7 @@ Thin by design: a model list, a relay proxy, and a log. The host (`pi-ai`) handl
 
 | Feature | What it does | Cost |
 | :--- | :--- | :--- |
-| **35 free models** | 11 from OpenCode Zen, 15 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
+| **34 free models** | 10 from OpenCode Zen, 15 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints, context windows up to 1M. Full list below. | **$0** |
 | **Relay pool** | Route requests through your own relays: a self-hosted egress pool (many egress IPs on one small host) or Cloudflare Workers / Deno Deploy / Vercel Edge workers. Traffic spreads across the pool, or stays on one sticky relay. A relay that rate-limits, times out, or drops the connection cools down while healthy ones take its traffic. | **$0** beyond your host or platforms' free tiers |
 | **Automatic fallback** | When every relay is cooling down, requests go direct to upstream instead of failing. | **$0** |
 | **Short model names** | Most models have a slash-free, colon-free alias, plus an optional `:effort` suffix for thinking depth. You type `freeflow/<name>`; the Cline model has no alias and must be typed in full. | **$0** |
@@ -214,7 +214,7 @@ The same command set works identically in OMP and Pi:
 
 ---
 
-### 35 models, one command
+### 34 models, one command
 
 ```bash
 /model → freeflow → pick
@@ -224,14 +224,13 @@ Every model specification is reconciled against [models.dev](https://models.dev/
 
 The host catalog carries text and image inputs only. Upstream video and audio support (MiMo: audio + video; GLM 5.3 Flash: video + PDF; Nemotron Super VL and Nano Omni: video) is therefore not selectable from the picker and is not declared in `input`.
 
-#### OpenCode Zen (11 models), Chat Completions API
+#### OpenCode Zen (10 models), Chat Completions API
 
 Good defaults for long coding sessions and agentic work.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `cat-jam-free` | Cat Jam | **1M** (1.048.576) | **131K** (131.072) | `low … max` | ❌ |
-| `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **128K** (131.072) | `minimal … xhigh`\* | ✅ |
+| `mimo-v2.6-flash-free` | Xiaomi MiMo | **1M** (1.048.576) | **128K** (131.072) | `minimal … xhigh`\* | ❌ |
 | `nemotron-3.5-lightning-free` | NVIDIA | **1M** (1.000.000) | **235K** (235.929) | `minimal … xhigh` | ❌ |
 | `nemotron-3.5-super-vl-free` | NVIDIA | **1M** (1.048.576) | **235K** (235.929) | `minimal … xhigh` | ✅ |
 | `nemotron-3-ultra-free` | NVIDIA | **1M** (1.000.000) | **182K** (182.520) | `minimal … xhigh` | ❌ |
@@ -394,7 +393,7 @@ pnpm smoke       # verifies extensions/index.ts loads without crashing
 #### Project structure
 
 ```
-├── models.ts                # 35-model catalog definitions
+├── models.ts                # 34-model catalog definitions
 ├── index.ts                 # extension entry, lifecycle hooks
 ├── catalog.ts               # model catalog cache (24h disk)
 ├── proxy.ts                 # local proxy server (127.0.0.1:28180)

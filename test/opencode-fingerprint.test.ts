@@ -627,13 +627,13 @@ test("tool_choice is auto-or-absent on Zen chat/responses; the messages lane kee
 });
 
 test("enforceOpencodeFingerprint: the chat lane clamps a flat reasoning_effort like the responses lane", () => {
-	// cat-jam-free: `minimal` is not an offered rung — the live gateway
+	// beam-free: `minimal` is not an offered rung — the live gateway
 	// enumerates max/xhigh/high/medium/low only (issue #62). The chat lane
 	// must run the same clampedEffortFor algorithm normalizeResponsesBody
 	// runs on the responses lane, so an unsupported flat effort clamps to the
 	// model's highest supported rung instead of 400ing upstream.
 	const clamp: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		messages: [],
 		reasoning_effort: "minimal",
 	};
@@ -651,21 +651,21 @@ test("enforceOpencodeFingerprint: the chat lane clamps a flat reasoning_effort l
 	// A supported rung, a genuine off, and a key the map does not know all
 	// ride byte-identical, matching normalizeResponsesBody semantics.
 	const chosen: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		reasoning_effort: "high",
 	};
 	enforceOpencodeFingerprint(chosen, "/v1/chat/completions");
 	assert.equal(chosen.reasoning_effort, "high", "a supported effort is untouched");
 
 	const off: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		reasoning_effort: "off",
 	};
 	enforceOpencodeFingerprint(off, "/v1/chat/completions");
 	assert.equal(off.reasoning_effort, "off", "genuine off is never rewritten");
 
 	const unknown: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		reasoningEffort: "bogus",
 	};
 	enforceOpencodeFingerprint(unknown, "/v1/chat/completions");
@@ -673,7 +673,7 @@ test("enforceOpencodeFingerprint: the chat lane clamps a flat reasoning_effort l
 
 	// The Zen messages lane carries no flat effort spelling and stays untouched.
 	const messagesLane: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		messages: [],
 		reasoning_effort: "bogus",
 	};
@@ -875,24 +875,24 @@ test("normalizeResponsesBody: flat reasoning effort max|ultra clamp to xhigh", (
 
 test("normalizeResponsesBody: ultra rewrites to the model's mapped max value", () => {
 	// `ultra` is an alias, never a value the gateway enumerates: a model whose
-	// ladder supports `max` (cat-jam-free's live set is max/xhigh/high/medium/
+	// ladder supports `max` (beam-free's live set is max/xhigh/high/medium/
 	// low) used to forward the alias upstream and eat a 400.
 	const nested: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		input: "hi",
 		reasoning: { effort: "ultra" },
 	};
 	normalizeResponsesBody(nested);
 	assert.deepEqual(nested.reasoning, { effort: "max" }, "nested ultra rewrites to the mapped max");
 	const flat: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		input: "hi",
 		reasoning_effort: "ULTRA",
 	};
 	normalizeResponsesBody(flat);
 	assert.equal(flat.reasoning_effort, "max", "flat field rewrites too, case-insensitively");
 	const camel: Record<string, unknown> = {
-		model: "cat-jam-free",
+		model: "beam-free",
 		input: "hi",
 		reasoningEffort: "ultra",
 	};

@@ -735,14 +735,11 @@ delete chatBody.preserve_thinking;
 // when a responses-path request was translated via chatBodyFromResponsesBody.
 // Strip defensively so the cap is not passed as an unknown extra argument.
 delete chatBody.max_output_tokens;
- if (canonicalModelId === OVH_NO_EFFORT_MODEL) {
-  // Measured 2026-10-22: with `reasoning_effort` present this model answers
-  // HTTP 200 whose body is a bare `data: [DONE]` — no deltas, no error — at
-  // max_tokens 4000 and 32000 alike; without the field it streams its own
-  // reasoning plus a proper tool call. Every other OVH model tolerates the
-  // field, so the strip is this model only. The responses-path translation
-  // cannot reintroduce it: chatBodyFromResponsesBody copies a fixed scalar
-  // list that carries no reasoning/effort key.
+ const modelDef = MODEL_MAP.get(canonicalModelId) ?? MODEL_MAP.get(requestedModel);
+ if (canonicalModelId === OVH_NO_EFFORT_MODEL || (modelDef && !modelDef.reasoning)) {
+  // Qwen3.8-27B on OVH starves when reasoning_effort is present.
+  // Non-reasoning OVH models (Llama 3.3, Mistral Small) return HTTP 400
+  // "feature 'reasoning_effort for this model' is not currently supported".
   delete chatBody.reasoning_effort;
  }
  if (canonicalModelId === OVH_STRICT_TOOL_CALL_ID_MODEL) {
@@ -855,9 +852,13 @@ delete chatBody.max_output_tokens;
    req,
    reqId,
    servedRelay ?? "direct",
-   findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
-    ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
-    : undefined,
+   {
+    callerHadTools: Array.isArray(parsedBody.tools) && parsedBody.tools.length > 0,
+    argSchemas,
+    findGlob,
+    pathname: "/v1/chat/completions",
+    normalizeReasoning: true,
+   },
    { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
   );
   return;

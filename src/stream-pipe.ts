@@ -314,6 +314,8 @@ export interface StreamCloakOptions {
  pathname: string;
  /** Caller tool schemas for argument repair; undefined/empty means byte-identical. */
  argSchemas?: ReadonlyMap<string, Record<string, unknown>>;
+ /** Normalize delta.reasoning to delta.reasoning_content for OpenAI/OMP compatibility. */
+ normalizeReasoning?: boolean;
 }
 
 /** Per-stream drop tracking (delta events carry no name, only an index/id). */
@@ -498,6 +500,7 @@ export function shouldBypassStreamCloak(cloak?: StreamCloakOptions): boolean {
  if (!cloak.callerHadTools && cloak.injected !== undefined) return false;
  // A repairable schema means fragmented arguments must be buffered.
  if (cloak.argSchemas !== undefined && cloak.argSchemas.size > 0) return false;
+ if (cloak.normalizeReasoning === true) return false;
  return true;
 }
 
@@ -843,7 +846,12 @@ function rewriteChatBlock(
    if (c.finish_reason || c.text || c.logprobs) allDeltasEmpty = false;
    continue;
   }
-  const d = delta as Record<string, unknown>;
+ const d = delta as Record<string, unknown>;
+ if (cloak.normalizeReasoning && typeof d.reasoning === "string" && typeof d.reasoning_content !== "string") {
+  d.reasoning_content = d.reasoning;
+  changed = true;
+  allDeltasEmpty = false;
+ }
   // Terminal chunk for this choice: re-emit every buffered tool call's whole
   // argument packet, repaired, at its host index. The fragments never went
   // out, so this is the first and only time the client sees them. Runs

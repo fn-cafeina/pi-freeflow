@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.42.0
+
+### Minor Changes
+
+- b247ea6: Enable relay pool routing for OVHcloud AI Endpoints to bypass per-IP rate limits during burst and subagent requests. Retire paid `z-ai/glm-5.3-flash` and update the Cline lane to true free-tier models (`cline/nemotron-3.5-super-vl`). Implement dynamic Cline version fetching from Open VSX with disk caching, and background keep-alive auto-probing so saved Cline account tokens never expire.
+
+### Patch Changes
+
+- 2b1f434: Roll Cline pool to the next slot when OpenRouter free models return in-stream 429 errors within HTTP 200 SSE streams.
+- 92532c3: Fix DeepSeek follow-up requests in Pi being rejected when earlier assistant messages have no reasoning content.
+- a6d9834: Retire unserved `cat-jam-free` (persistent upstream 404), correct `mimo-v2.6-flash-free` input modality to text-only (upstream rejects image input), and strip `max_output_tokens` on the OVH lane so translated Responses requests no longer trigger upstream 400 extra arguments errors. Model catalog count updated from 35 to 34 across documentation and tests.
+- debb162: Report client version 1.19.4 to OpenCode, matching the current upstream release. The session-ID format is unchanged: upstream refactored its generator in the same release, and identifiers are still `ses_` followed by 12 hexadecimal timestamp characters and 14 random characters.
+- b5083bd: Stop OVH Qwen models from failing with `400 feature 'extra arguments: {"chat_template_kwargs": …}' is not currently supported`.
+  
+  The host classifies the loopback proxy as a local OpenAI-compatible backend before model compat overrides land, so `Qwen3.x` ids were treated as template-dialect Qwen and every OVH request carried `chat_template_kwargs` (`enable_thinking`, `preserve_thinking`). OVH's OpenAI-compatible surface rejects those fields. The OVH lane now pins `thinkingFormat: "openai"` and clears `qwenPreserveThinking`, and `handleOvhRequest` strips any Qwen template controls that still reach the proxy.
+- 92a818a: Normalize OVH reasoning stream chunks from `delta.reasoning` to standard `delta.reasoning_content` so OMP and OpenAI-compatible clients capture thinking tokens without reporting empty turns. Defensively strip `reasoning_effort` on non-reasoning OVH models (`Meta-Llama-3_3-70B-Instruct` and `Mistral-Small-3.2-24B-Instruct-2506`) to prevent upstream HTTP 400 unsupported feature errors.
+- debb162: Remove MiniMax M3.1 Flash from the free catalog: both free endpoints are gone. OpenCode Zen answers HTTP 410 with a model-level deprecation pointing at `deepseek-v4.1-flash-free`, and the KiloCode free id answers HTTP 404 "does not exist" while the gateway listing keeps only a paid id. Both leave the picker and both stay dead-listed, so a stale cache cannot bring them back. The `minimax-m3.1-flash` short name is removed rather than pointing at a paid model. The catalog is 35 models: 11 from OpenCode Zen, 15 from KiloCode Gateway, 1 from Cline, 8 from OVHcloud AI Endpoints.
+
 ## 1.41.0
 
 ### Minor Changes

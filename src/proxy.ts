@@ -787,7 +787,10 @@ delete chatBody.max_output_tokens;
      signal: controller.signal,
     },
     reqId,
-    { onServed: (url) => { servedRelay = url; } },
+    {
+     roundRobin: true,
+     onServed: (url) => { servedRelay = url; },
+    },
     (failure) => audit?.attemptFailure({ attempt: failure.attempt, status: failure.status, reason: failure.reason }),
    );
   } else {

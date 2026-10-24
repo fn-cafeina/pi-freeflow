@@ -824,26 +824,32 @@ export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
  * a key the cursor round-robins per request. Cooling relays stay at the tail,
  * so a rate-limited IP is never preferred.
  */
-export function orderedRelayCandidates(preferredRelay?: string, spreadKey?: string): string[] {
- const ordered = getOrderedRelayUrls();
- const preferred = (preferredRelay ?? "").trim();
- if (preferred) {
-  const index = ordered.indexOf(preferred);
-  if (index <= 0) return ordered;
-  if (!isSessionPinEligible(preferred, ordered)) return ordered;
-  return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
- }
- if (activeRelayState.mode !== "spread") return ordered;
- const healthy = ordered.filter((u) => isRelayHealthy(u));
- const cooling = ordered.filter((u) => !isRelayHealthy(u));
- if (healthy.length <= 1) return [...healthy, ...cooling];
- const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
- return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];
+export function orderedRelayCandidates(
+	preferredRelay?: string,
+	spreadKey?: string,
+	forceRoundRobin?: boolean,
+): string[] {
+	const ordered = getOrderedRelayUrls();
+	const preferred = (preferredRelay ?? "").trim();
+	if (preferred) {
+		const index = ordered.indexOf(preferred);
+		if (index <= 0) return ordered;
+		if (!isSessionPinEligible(preferred, ordered)) return ordered;
+		return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
+	}
+	if (activeRelayState.mode !== "spread" && !forceRoundRobin) return ordered;
+	const healthy = ordered.filter((u) => isRelayHealthy(u));
+	const cooling = ordered.filter((u) => !isRelayHealthy(u));
+	if (healthy.length <= 1) return [...healthy, ...cooling];
+	const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
+	return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];
 }
 
 /** Round-robin cursor for spread mode when no stable key is available. */
 let spreadCursor = 0;
 
+/** Test-only: reset spread / round-robin cursor */
+export function _resetSpreadCursorForTest(): void { spreadCursor = 0; }
 /** FNV-1a: stable string -> bucket index for per-conversation sharding. */
 function stableHash(s: string): number {
  let h = 2166136261;

@@ -151,6 +151,8 @@ export interface RelayAffinity {
 	preferred?: string;
 	/** Stable key used to shard requests across healthy relays in spread mode. */
 	spreadKey?: string;
+	/** When true, healthy relays rotate round-robin regardless of pool mode (e.g. for OVH). */
+	roundRobin?: boolean;
 	onServed?: (relay: string | null) => void;
 }
 
@@ -186,7 +188,7 @@ export async function relayFetch(
 		affinity.onServed?.(null);
 		return fetch(url, opts as unknown as RequestInit);
 	}
-	const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey);
+	const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin);
 
 	if (candidates.length === 0) {
 		// Empty pool: skip straight to upstream instead of logging a misleading
@@ -709,11 +711,12 @@ export async function relayFetch(
 			const affinityServed =
 				Boolean(affinity.preferred) &&
 				targetUrl.trim() === (affinity.preferred ?? "").trim();
-			// Spread mode has no single primary: every request picks its own
-			// healthy relay, so rewriting the sticky URL here would churn the
-			// state file and spam "active relay auto-switched" on every turn.
+			// Spread mode and forced round-robin have no single primary: every
+			// request picks its own healthy relay, so rewriting the sticky URL here
+			// would churn the state file and spam "active relay auto-switched" on every turn.
 			const spreadMode = relayState.mode === "spread";
-			if (relayState.url !== targetUrl && !affinityServed && !spreadMode) {
+			const roundRobin = Boolean(affinity.roundRobin);
+			if (relayState.url !== targetUrl && !affinityServed && !spreadMode && !roundRobin) {
 				log("info", `active relay auto-switched to ${targetUrl}`, {
 					previous: relayState.url,
 				}, rid);

@@ -152,9 +152,12 @@ export function findExecutableOnPath(
  *
  * Priority order:
  * 1. Explicit override via opts.overrideExecPath or PI_FREEFLOW_DAEMON_RUNTIME env var.
- * 2. Current process.execPath (if and only if it is actually a node or bun executable).
- * 3. Search PATH for `bun` (preferred: native TypeScript support with zero flags).
- * 4. Search PATH for `node` (Node.js >= 22.6 with --experimental-strip-types).
+ * 2. Current process.execPath when it is bun (a Bun host keeps its own runtime).
+ * 3. Current process.execPath when it is node, unless a `bun` on PATH wins:
+ *    Bun is preferred for the daemon because its transport is not refused by
+ *    the OpenCode Zen free-tier gate. If Bun is absent, the host's Node runs it.
+ * 4. For a non-JS host, search PATH for `bun` (native TypeScript support with
+ *    zero flags), then `node` (Node.js >= 22.6 with --experimental-strip-types).
  *
  * Returns null if no valid runtime is found (e.g. running as a standalone `omp` binary
  * without bun or node on PATH). The caller MUST fall back to an in-process proxy rather
@@ -176,18 +179,33 @@ export function resolveDaemonRuntime(opts?: {
   return { execPath: envExec, args, runtimeType: type };
  }
 
- // 2. Check current process.execPath
+ // 2. A Bun host keeps its own runtime; never swap it for something on PATH.
  const currentExec = opts?.currentExecPath ?? process.execPath;
  const currentType = isJsRuntimeExecutable(currentExec);
- if (currentType !== null) {
-  const args = currentType === "bun" ? [script] : ["--experimental-strip-types", script];
-  return { execPath: currentExec, args, runtimeType: currentType };
+ if (currentType === "bun") {
+  return { execPath: currentExec, args: [script], runtimeType: "bun" };
  }
 
- // 3. Current executable is not a JS runtime (e.g. omp, pi, electron).
- // Search PATH for bun first, then node.
  const pathVal = opts?.envPath ?? process.env.PATH ?? process.env.Path ?? "";
 
+ // 3. A Node host prefers a Bun on PATH for the daemon. The Zen free-tier
+ // transport gate accepts Bun and refuses Node, so a host launched as a Node
+ // script must not pin the daemon to its own runtime. An explicit override
+ // above still wins, and a host without Bun keeps its Node.
+ if (currentType === "node") {
+  const bunOnPath = findExecutableOnPath("bun", pathVal);
+  if (bunOnPath) {
+   return { execPath: bunOnPath, args: [script], runtimeType: "bun" };
+  }
+  return {
+   execPath: currentExec,
+   args: ["--experimental-strip-types", script],
+   runtimeType: "node",
+  };
+ }
+
+ // 4. Current executable is not a JS runtime (e.g. omp, pi, electron).
+ // Search PATH for bun first, then node.
  const bunOnPath = findExecutableOnPath("bun", pathVal);
  if (bunOnPath) {
   return { execPath: bunOnPath, args: [script], runtimeType: "bun" };

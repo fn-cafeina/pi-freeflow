@@ -193,10 +193,11 @@ test("OpenCode IDs match the upstream identifier algorithm vectors", () => {
 });
 
 test("OpenCode UA floor and normalization", () => {
- assert.equal(OPENCODE_VERSION_FLOOR, "1.17.0");
- assert.ok(isSupportedOpenCodeVersion("1.17.0"), "floor itself is supported");
+ assert.equal(OPENCODE_VERSION_FLOOR, "1.18.0");
+ assert.ok(isSupportedOpenCodeVersion("1.18.0"), "floor itself is supported");
  assert.ok(isSupportedOpenCodeVersion("1.18.31"), "pinned fallback is supported");
  assert.ok(isSupportedOpenCodeVersion("9.9.9"), "newer versions are supported");
+ assert.equal(isSupportedOpenCodeVersion("1.17.0"), false, "1.17.x is refused with 426 upstream");
  assert.equal(isSupportedOpenCodeVersion("1.16.9"), false, "below-floor rejected");
  assert.equal(isSupportedOpenCodeVersion("local"), false, "dev-channel marker rejected");
  assert.equal(isSupportedOpenCodeVersion(""), false);
@@ -225,7 +226,7 @@ test("OpenCode UA live/fallback/override precedence (offline-safe)", async () =>
   assert.equal(getOpenCodeUserAgent(), "opencode/8.8.8");
   assert.equal(await refreshOpenCodeUserAgent(), "opencode/8.8.8", "override short-circuits refresh");
   // Below-floor override is ignored.
-  process.env[OPENCODE_USER_AGENT_ENV] = "1.0.0";
+  process.env[OPENCODE_USER_AGENT_ENV] = "1.17.0";
   assert.equal(getOpenCodeUserAgent(), `opencode/${OPENCODE_VERSION_FALLBACK}`);
   delete process.env[OPENCODE_USER_AGENT_ENV];
   // Live refresh success: sync getter serves it, disk cache persists it.
@@ -239,7 +240,7 @@ test("OpenCode UA live/fallback/override precedence (offline-safe)", async () =>
   _resetLiveOpenCodeVersionForTest();
   assert.equal(getOpenCodeUserAgent(), "opencode/9.9.9", "fresh disk cache is live-UA material");
   // Below-floor fetch never replaces the fallback.
-  const stubLow = (async () => new Response(JSON.stringify({ version: "1.0.0" }), { status: 200 })) as typeof fetch;
+  const stubLow = (async () => new Response(JSON.stringify({ version: "1.17.0" }), { status: 200 })) as typeof fetch;
   _resetLiveOpenCodeVersionForTest();
   fs.rmSync(cacheFile, { force: true });
   assert.equal(await refreshOpenCodeUserAgent(stubLow), `opencode/${OPENCODE_VERSION_FALLBACK}`);

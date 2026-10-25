@@ -44,10 +44,14 @@ was wrong.
 
 | # | Axis | Accepted | Missing |
 | --- | --- | --- | --- |
-| 1 | `User-Agent` | `opencode/1.19.4` and other `opencode/*` values | `403` |
+| 1 | `User-Agent` | `opencode/1.18.0` or newer | `403` |
 | 2 | Session header | `x-opencode-session` **or** `x-session-affinity`, carrying a canonical id | `403` |
 | 3 | Tool declarations | the placeholder sextet `{bash, glob, grep, read, edit, write}` | `403` |
 | 4 | Streaming | `stream: true` | `403` |
+
+A present but older `User-Agent` (`opencode/1.17.x` or below) is refused with
+`426 UpgradeRequired` instead of `403`; the value must be both formatted as
+`opencode/*` and at or above `1.18.0`.
 
 Measured 2026-10-13 against `space-bunny-free` and
 `nemotron-3.5-lightning-free`, on both the chat and the responses path, with
@@ -186,12 +190,40 @@ This is separate from the relay egress refusal: a request that leaves through a
 Cloudflare/WARP-class egress is refused whatever its body says, so a relay
 `429` is not fixed by the block (see [Relays](/pages/relays)).
 
+## The transport is part of the gate
+
+Measured 2026-10-25. A body that satisfies every axis above, with the `<env>`
+block and the tool sextet, can still be refused depending on who sends it:
+
+| Client | Status |
+| --- | --- |
+| Bun 1.4.3 `fetch` | **`200`** |
+| Node.js 24 `fetch` | `429` |
+| curl, HTTP/1.1 | `429` |
+| curl, HTTP/2 | `429` |
+| official OpenCode CLI 2.0.32 | **`200`** |
+
+The body was byte-identical across the Bun and Node runs; only the transport
+changed. That makes this a separate axis from the body-side `429` above, and a
+request that has the block is still not guaranteed to pass.
+
+pi-freeflow therefore runs the detached proxy daemon on Bun when Bun is on
+`PATH`. A host launched as a Node script no longer pins the daemon to Node; if
+Bun is absent, the daemon falls back to the host's Node. An explicit
+`PI_FREEFLOW_DAEMON_RUNTIME` still wins, and a host already running on Bun keeps
+its own runtime.
+
+A relay does not bypass this axis: upstream sees the relay's outbound
+connection, not the local daemon's. The same is true of a relay pool whose
+router runs on Node, even when the plugin's own daemon uses Bun.
+
 ## What does not matter
 
 Once all four axes are present, these make no difference to the outcome:
 
-- `User-Agent` version, across `opencode/1.0.0` … `opencode/1.22.0` — the value
-  matters, the exact version does not
+- `User-Agent` version at or above `opencode/1.18.0` — the prefix matters, the
+  exact version does not; older versions are refused with
+  `426 UpgradeRequired`
 - `x-opencode-client: cli` vs `desktop`
 - `x-opencode-project`, whether the SHA-1 of the upstream git remote, the
   literal `global`, a random hex value, or empty

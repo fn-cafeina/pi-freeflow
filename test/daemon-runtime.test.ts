@@ -121,15 +121,39 @@ test("findExecutableOnPath: locates binary in mock PATH directory", () => {
  }
 });
 
-test("resolveDaemonRuntime: uses currentExecPath when it is node", () => {
+test("resolveDaemonRuntime: keeps currentExecPath when it is node and no bun is on PATH", () => {
  const runtime = resolveDaemonRuntime({
   currentExecPath: "/usr/bin/node",
   scriptPath: "/path/to/daemon.ts",
+  envPath: "",
  });
  assert.ok(runtime);
  assert.equal(runtime!.execPath, "/usr/bin/node");
  assert.equal(runtime!.runtimeType, "node");
  assert.deepEqual(runtime!.args, ["--experimental-strip-types", "/path/to/daemon.ts"]);
+});
+
+test("resolveDaemonRuntime: prefers bun on PATH when currentExecPath is node", () => {
+ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-node-bun-"));
+ try {
+  const bunName = isWin ? "bun.exe" : "bun";
+  const bunPath = path.join(tmpDir, bunName);
+  fs.writeFileSync(bunPath, "");
+  if (!isWin) fs.chmodSync(bunPath, 0o755);
+
+  const runtime = resolveDaemonRuntime({
+   currentExecPath: "/usr/bin/node",
+   scriptPath: "/path/to/daemon.ts",
+   envPath: tmpDir,
+  });
+
+  assert.ok(runtime);
+  assert.equal(path.resolve(runtime!.execPath).toLowerCase(), path.resolve(bunPath).toLowerCase());
+  assert.equal(runtime!.runtimeType, "bun");
+  assert.deepEqual(runtime!.args, ["/path/to/daemon.ts"]);
+ } finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+ }
 });
 
 test("resolveDaemonRuntime: uses currentExecPath when it is bun", () => {
@@ -141,6 +165,28 @@ test("resolveDaemonRuntime: uses currentExecPath when it is bun", () => {
  assert.equal(runtime!.execPath, "/home/user/.bun/bin/bun");
  assert.equal(runtime!.runtimeType, "bun");
  assert.deepEqual(runtime!.args, ["/path/to/daemon.ts"]);
+});
+
+test("resolveDaemonRuntime: a bun host keeps its runtime over a different bun on PATH", () => {
+ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ff-bun-host-"));
+ try {
+  const bunName = isWin ? "bun.exe" : "bun";
+  const pathBun = path.join(tmpDir, bunName);
+  fs.writeFileSync(pathBun, "");
+  if (!isWin) fs.chmodSync(pathBun, 0o755);
+
+  const runtime = resolveDaemonRuntime({
+   currentExecPath: "/home/user/.bun/bin/bun",
+   scriptPath: "/path/to/daemon.ts",
+   envPath: tmpDir,
+  });
+
+  assert.ok(runtime);
+  assert.equal(runtime!.execPath, "/home/user/.bun/bin/bun");
+  assert.equal(runtime!.runtimeType, "bun");
+ } finally {
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+ }
 });
 
 test("resolveDaemonRuntime: honors explicit override (opts and env var)", () => {

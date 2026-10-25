@@ -376,6 +376,9 @@ Contributions welcome: bug fixes, new relay platforms, model additions, docs imp
 #### Prerequisites
 
 - **Node.js ≥ 22.19.0** (uses `--experimental-strip-types`, no build step)
+- **Bun (recommended)** — when found on `PATH`, the proxy daemon runs on Bun
+  instead of the host's Node. The OpenCode Zen free tier refuses Node's
+  transport, so Zen requests need Bun; other lanes keep working without it.
 - **pnpm** (package manager)
 
 #### Setup and verify

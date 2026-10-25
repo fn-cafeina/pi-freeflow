@@ -120,7 +120,7 @@ Runtime knobs, all read in `src/config.ts`. "Unset" means the default applies.
 | `PI_FREEFLOW_ALLOW_UNSAFE_RELAY` | unset | **Unsafe.** When `1`, accepts `http://` and private-host relay URLs (tests/dev). It opens the relay allowlist to SSRF-shaped targets — do not set it in normal use. |
 | `PI_FREEFLOW_NO_KILL` | unset | When `1`, never replace a version-mismatched (stale) daemon. |
 | `PI_FREEFLOW_DAEMON_SPAWN` | enabled | When `0`, never spawn a detached proxy daemon (tests/CI only). |
-| `PI_FREEFLOW_DAEMON_RUNTIME` | auto | Explicit node/bun executable path for the detached daemon. |
+| `PI_FREEFLOW_DAEMON_RUNTIME` | auto | Explicit node/bun executable path for the detached daemon. Auto prefers Bun on `PATH` (required by the Zen free-tier transport gate) and falls back to Node when Bun is absent. |
 | `PI_FREEFLOW_DAEMON_TTL_MS` | `30000` | Client lease TTL; expired leases are dropped by the daemon GC. |
 | `PI_FREEFLOW_DAEMON_HEARTBEAT_MS` | `8000` (Windows) / `10000` | Client heartbeat interval (kept well under the lease TTL). |
 | `PI_FREEFLOW_DAEMON_GC_MS` | `5000` | Daemon lease-GC sweep interval. |

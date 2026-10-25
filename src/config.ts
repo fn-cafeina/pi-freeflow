@@ -71,10 +71,11 @@ export const PORT = resolvePort();
 //   `opencode/${InstallationChannel}/${InstallationVersion}/${client}` (CLI).
 // - packages/core/src/installation/version.ts falls back to "local" when the
 //   build-time OPENCODE_VERSION global is absent.
-// Free-tier floor: opencodeHeaders() must never send below 1.17.0.
+// Free-tier floor: opencodeHeaders() must never send below 1.18.0. Upstream
+// answers 426 UpgradeRequired for 1.17.x, so older values are not sent at all.
 // OPENCODE_VERSION_FLOOR pins the minimum; OPENCODE_VERSION_FALLBACK is the
 // last-known-good npm version used when the live lookup is stale/offline.
-export const OPENCODE_VERSION_FLOOR = "1.17.0";
+export const OPENCODE_VERSION_FLOOR = "1.18.0";
 export const OPENCODE_VERSION_FALLBACK = "1.19.4";
 /** Live npm lookup TTL: 6h — within one window the cached UA is reused. */
 export const OPENCODE_VERSION_TTL_MS = 6 * 60 * 60 * 1_000;

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.42.1
+
+### Patch Changes
+
+- 5ab7509: Enable forced round-robin relay selection for stateless OVHcloud AI requests across all healthy pool relays, load-balancing requests to prevent hitting upstream per-IP rate limits (2 req/min) while preserving sticky session affinity for OpenCode Zen.
+
 ## 1.42.0
 
 ### Minor Changes

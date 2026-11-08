@@ -906,6 +906,7 @@ export function startProxy(
            {
             preferred: typeof issuer === "string" ? issuer : undefined,
             spreadKey: conversationKey ?? reqId,
+            lane: "opencode",
             onServed: (relay) => {
              servedIssuer = relay;
              issuerReported = true;
@@ -998,6 +999,7 @@ export function startProxy(
           {
            upstreamContentType: response.headers.get("content-type"),
            audit: audit.active ? audit : undefined,
+           lane: "opencode",
            refire: async (reason) => {
             if (midStreamRefires >= 1) return null;
             midStreamRefires += 1;
@@ -1341,7 +1343,7 @@ export function startProxy(
         reqId,
         "direct",
         streamCloak,
-        { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
+        { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined, lane: "opencode" },
        );
       } else if (upstreamRes.body) {
        const rawUpstreamText = await upstreamRes.text();

@@ -134,7 +134,7 @@ export function buildProviderConfig(
     api: m.api,
     owned_by: m.source === "kilo" ? "kilocode" : m.source === "cline" ? "clinecode" : m.source === "ovh" ? "ovhcloud" : "opencode",
     reasoning: m.reasoning,
-    thinking: m.reasoning
+    thinking: m.reasoning && (m.thinkingLevelMap === undefined || efforts.length > 0)
      ? {
       mode: "effort",
       efforts: efforts.length > 0 ? efforts : ["low", "high", "max"],

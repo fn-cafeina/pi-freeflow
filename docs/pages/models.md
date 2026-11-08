@@ -34,7 +34,7 @@ pi-freeflow provides unified access to **32 curated free models** across four up
 - **Endpoint**: `https://oai.endpoints.kepler.ai.cloud.ovh.net/v1`
 - **Auth**: keyless — no account and no `Authorization` header at all
 - **Models**: 8 open-weight models (GPT-OSS, Qwen 3.5/3.6/3.8, Mistral, Llama)
-- **Routing**: direct only, never through the relay pool
+- **Routing**: relay pool when armed (round-robin, cooling relays skipped); direct otherwise. Rotation helps only when the relay egress is the limiter — OVH's anonymous capacity may still be shared per model.
 - **Config**: `api: "openai-completions"`. Chat is the only upstream shape: OVH's responses endpoint rejects every array `input` with `422 input: data did not match any variant of untagged enum ResponseInput` and accepts only a bare string, so a responses-path request is translated to chat upstream and the answer mapped back — the same shape mapping the Cline lane uses.
 
 ## 32 Model Specifications
@@ -82,7 +82,7 @@ Cline free models come from a rotating per-account promo and need a browser logi
 
 ### OVHcloud AI Endpoints (8 models)
 
-Anonymous access: no account, no key, no login step. When the relay pool is armed, OVH requests route through your relays to bypass the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct. The `ovh-free/` prefix namespaces the lane in the picker; upstream only ever sees the part after the slash, which is case-sensitive.
+Anonymous access: no account, no key, no login step. When the relay pool is armed, OVH requests route through your relays (round-robin, cooling relays skipped) to spread the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct. Rotation helps only when the relay egress is the limiter — OVH's anonymous capacity may still be shared per model. The `ovh-free/` prefix namespaces the lane in the picker; upstream only ever sees the part after the slash, which is case-sensitive.
 
 | Model ID | Context | Max Output | Thinking | Vision |
 | :--- | ---: | ---: | :--- | :--- |
@@ -91,7 +91,7 @@ Anonymous access: no account, no key, no login step. When the relay pool is arme
 | `ovh-free/Qwen3.5-397B-A17B` | 262,144 | 235,929 | low..high | ✅ |
 | `ovh-free/Qwen3.5-9B` | 262,144 | 65,536 | low..high | ✅ |
 | `ovh-free/Qwen3.6-27B` | 262,144 | 65,536 | minimal..high | ✅ |
-| `ovh-free/Qwen3.8-27B` | 262,144 | 235,929 | minimal..high | ✅ |
+| `ovh-free/Qwen3.8-27B` | 262,144 | 235,929 | low/medium/xhigh | ✅ |
 | `ovh-free/Mistral-Small-3.2-24B-Instruct-2506` | 131,072 | 32,768 | ❌ | ✅ |
 | `ovh-free/Meta-Llama-3_3-70B-Instruct` | 131,072 | 32,768 | ❌ | ❌ |
 

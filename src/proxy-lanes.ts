@@ -457,7 +457,7 @@ export async function handleClineRequest(opts: HandleClineRequestOptions): Promi
    findGlob.renamedFindToGlob || findGlob.renamed !== undefined || argSchemas.size > 0
     ? { callerHadTools: true, argSchemas, findGlob, pathname: "/v1/chat/completions" }
     : undefined,
-   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
+   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined, lane: "cline" },
   );
   return;
  }
@@ -516,8 +516,11 @@ export async function handleClineRequest(opts: HandleClineRequestOptions): Promi
 // already lost its `ovh-free/` prefix, and a short alias (`qwen3.8-27b`,
 // `mistral-small-3.2`) must resolve to the same model.
 
-/** Qwen3.8-27B on OVH: `reasoning_effort` starves the model into an empty turn. */
-const OVH_NO_EFFORT_MODEL = "ovh-free/Qwen3.8-27B" as const;
+/** Qwen3.8-27B on OVH serves its native low/medium/xhigh ladder; values
+ *  outside it (minimal/high/max) close the turn with a bare `data: [DONE]`
+ *  (`high` probed 2026-11-08; the rest are outside the model's template). */
+const OVH_QWEN38_MODEL = "ovh-free/Qwen3.8-27B" as const;
+const OVH_QWEN38_EFFORTS = new Set(["low", "medium", "xhigh"]);
 /** Mistral Small 3.2 on OVH: replayed tool-call ids must be 9 alphanumerics. */
 const OVH_STRICT_TOOL_CALL_ID_MODEL = "ovh-free/Mistral-Small-3.2-24B-Instruct-2506" as const;
 const OVH_TOOL_CALL_ID_RE = /^[A-Za-z0-9]{9}$/;
@@ -648,8 +651,9 @@ export interface HandleOvhRequestOptions {
 }
 
 /**
- * Serve an OVH-model request direct (never relay pool, no opencode
- * fingerprint). Chat-only upstream: OVH's responses endpoint rejects every
+ * Serve an OVH-model request through the relay pool when the pool is armed
+ * (round-robin, cooling relays skipped) or direct otherwise. No opencode
+ * fingerprint. Chat-only upstream: OVH's responses endpoint rejects every
  * array `input` shape with 422 "input: data did not match any variant of
  * untagged enum ResponseInput" and accepts only a bare string (probed
  * 2026-10-13), so a responses-path body translates to chat upstream and the
@@ -687,17 +691,30 @@ export async function handleOvhRequest(opts: HandleOvhRequestOptions): Promise<v
  delete chatBody.chat_template_kwargs;
  delete chatBody.enable_thinking;
  delete chatBody.preserve_thinking;
- // OVH's OpenAI-compatible surface rejects Responses-native caps (`400 feature
- // 'extra arguments: {"max_output_tokens":…}' is not currently supported`)
- // when a responses-path request was translated via chatBodyFromResponsesBody.
- // Strip defensively so the cap is not passed as an unknown extra argument.
+ // OVH's OpenAI-compatible surface rejects the Responses-native cap as an
+ // extra argument, but dropping it silently let a turn run to the model's own
+ // 235K ceiling. Map it to the chat spelling when the caller set no other cap.
+ if (
+  typeof chatBody.max_output_tokens === "number" &&
+  typeof chatBody.max_tokens !== "number" &&
+  typeof chatBody.max_completion_tokens !== "number"
+ ) {
+  chatBody.max_tokens = chatBody.max_output_tokens;
+ }
  delete chatBody.max_output_tokens;
  const modelDef = MODEL_MAP.get(canonicalModelId) ?? MODEL_MAP.get(requestedModel);
- if (canonicalModelId === OVH_NO_EFFORT_MODEL || (modelDef && !modelDef.reasoning)) {
-  // Qwen3.8-27B on OVH starves when reasoning_effort is present.
+ if (modelDef && !modelDef.reasoning) {
   // Non-reasoning OVH models (Llama 3.3, Mistral Small) return HTTP 400
   // "feature 'reasoning_effort for this model' is not currently supported".
   delete chatBody.reasoning_effort;
+ } else if (canonicalModelId === OVH_QWEN38_MODEL) {
+  // Qwen3.8-27B's native ladder is low/medium/xhigh (xhigh is the model
+  // default). Minimal/high/max make OVH close the turn with a bare [DONE]
+  // (probed 2026-11-08), so drop only those unsupported values.
+  const effort = chatBody.reasoning_effort;
+  if (effort !== undefined && (typeof effort !== "string" || !OVH_QWEN38_EFFORTS.has(effort))) {
+   delete chatBody.reasoning_effort;
+  }
  }
  if (canonicalModelId === OVH_STRICT_TOOL_CALL_ID_MODEL) {
   // Quirk documented on normalizeOvhToolCallIds: a host-supplied history id
@@ -713,15 +730,12 @@ export async function handleOvhRequest(opts: HandleOvhRequestOptions): Promise<v
  // a name Pi never registered.
  const findGlob = buildFindGlobRestore(Array.isArray(parsedBody.tools) ? parsedBody.tools : []);
  chatBody.stream = true;
- // Header-wait timeout + client-disconnect abort, cleared once headers arrive
- // so a long stream is not killed at the timeout ceiling.
- const controller = new AbortController();
- const timeoutId = setTimeout(
-  () => controller.abort(upstreamTimeoutError()),
-  UPSTREAM_HEADER_TIMEOUT_MS,
- );
+ // Client-disconnect abort only. The relay leg owns its per-attempt header
+ // deadline (relay.ts), so a lane-level timer must not masquerade as a client
+ // abort: relayFetch would rethrow it without rolling or marking the relay.
+ const clientCtl = new AbortController();
  const abortOnClientGone = (): void => {
-  if (!res.writableEnded) controller.abort();
+  if (!res.writableEnded) clientCtl.abort();
  };
  res.once("close", abortOnClientGone);
  req.once("error", abortOnClientGone);
@@ -741,22 +755,38 @@ export async function handleOvhRequest(opts: HandleOvhRequestOptions): Promise<v
      method: "POST",
      headers: { "Content-Type": "application/json" },
      body: JSON.stringify(chatBody),
-     signal: controller.signal,
+     signal: clientCtl.signal,
     },
     reqId,
     {
      roundRobin: true,
+     lane: "ovh",
+     skipCooling: true,
      onServed: (url) => { servedRelay = url; },
     },
     (failure) => audit?.attemptFailure({ attempt: failure.attempt, status: failure.status, reason: failure.reason }),
    );
   } else {
-   upstreamRes = await fetch(OVH_CHAT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(chatBody),
-    signal: controller.signal,
-   });
+   // Direct leg keeps its own header-wait deadline; the timer is cleared once
+   // headers arrive so a long stream is not killed at the timeout ceiling.
+   const directCtl = new AbortController();
+   const abortDirectOnClientGone = (): void => directCtl.abort();
+   clientCtl.signal.addEventListener("abort", abortDirectOnClientGone, { once: true });
+   const timeoutId = setTimeout(
+    () => directCtl.abort(upstreamTimeoutError()),
+    UPSTREAM_HEADER_TIMEOUT_MS,
+   );
+   try {
+    upstreamRes = await fetch(OVH_CHAT_URL, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+     body: JSON.stringify(chatBody),
+     signal: directCtl.signal,
+    });
+   } finally {
+    clearTimeout(timeoutId);
+    clientCtl.signal.removeEventListener("abort", abortDirectOnClientGone);
+   }
   }
  } catch (e) {
   log("error", "ovh upstream fetch failed", { error: String(e), model: requestedModel }, reqId);
@@ -768,7 +798,6 @@ export async function handleOvhRequest(opts: HandleOvhRequestOptions): Promise<v
   }
   return;
  } finally {
-  clearTimeout(timeoutId);
   res.off("close", abortOnClientGone);
   req.off("error", abortOnClientGone);
  }
@@ -819,7 +848,7 @@ export async function handleOvhRequest(opts: HandleOvhRequestOptions): Promise<v
     pathname: "/v1/chat/completions",
     normalizeReasoning: true,
    },
-   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined },
+   { upstreamContentType: upstreamRes.headers.get("content-type"), audit: audit?.active ? audit : undefined, lane: "ovh" },
   );
   return;
  }
@@ -931,7 +960,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
     signal: kiloController.signal,
    },
    reqId,
-   undefined,
+   { lane: "kilo" },
    (info) => audit?.attemptFailure(info),
   );
   if (response.status === 400 && !res.writableEnded) {
@@ -1004,7 +1033,7 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
      pathname: pathname.endsWith("/responses") ? "/v1/responses" : "/v1/chat/completions",
     }
     : undefined,
-   { upstreamContentType: response.headers.get("content-type"), audit: audit?.active ? audit : undefined },
+   { upstreamContentType: response.headers.get("content-type"), audit: audit?.active ? audit : undefined, lane: "kilo" },
   );
  } else {
   const rawUpstreamText = await response.text();
@@ -1026,8 +1055,9 @@ export async function handleKiloRequest(opts: HandleKiloRequestOptions): Promise
  * when the model is a non-empty string present in MODEL_MAP or KILO_MODEL_IDS
  * (Kilo traffic leaves via its own branch regardless), and when the model is
  * missing/empty (e.g. GET /v1/models carries no body — preserve routing).
- * Cline and OVH models are direct-only and never relay-eligible. Anything else
- * (unknown/paid model ids, non-strings) goes direct upstream.
+ * Cline models are direct-only and never relay-eligible; OVH models are
+ * relay-eligible when the pool is armed. Anything else (unknown/paid model
+ * ids, non-strings) goes direct upstream.
  */
 export function isRelayEligibleModel(model: unknown): boolean {
  if (model === undefined || model === null) return true;

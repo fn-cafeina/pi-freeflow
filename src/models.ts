@@ -5,7 +5,7 @@
  * - 8 OpenCode Zen models (all Chat Completions)
  * - 15 KiloCode Keyless Gateway models (OpenRouter format)
  * - 1 Cline direct-only model (per-user pool; z-ai/glm-5.3-flash)
- * - 8 OVHcloud AI Endpoints models (keyless, direct-only)
+ * - 8 OVHcloud AI Endpoints models (keyless, relay-eligible when the pool is armed)
  *
  * No static entry declares `api: "openai-responses"` any more: the Zen
  * muse-spark contributor ids went first (1.3 on 2026-10-17, 1.2 on 2026-10-18)
@@ -575,9 +575,9 @@ const OVH_REASONING_MAP: ThinkingLevelMap = {
 };
 
 /**
- * Qwen3.6/Qwen3.8 on OVH publish one extra rung: models.dev's ovhcloud row
- * lists none/minimal/low/medium/high, unlike the 3.5 pairs and gpt-oss which
- * start at low. No xhigh/max on either.
+ * Qwen3.6 on OVH publishes one extra rung: models.dev's ovhcloud row lists
+ * none/minimal/low/medium/high, unlike the 3.5 pairs and gpt-oss which start
+ * at low. No xhigh/max. Qwen3.8 has its own native map below.
  */
 const OVH_QWEN_REASONING_MAP: ThinkingLevelMap = {
  off: null,
@@ -590,6 +590,21 @@ const OVH_QWEN_REASONING_MAP: ThinkingLevelMap = {
 };
 
 /**
+ * Qwen3.8-27B's native reasoning ladder is low/medium/xhigh; xhigh is the
+ * model's default. OVH serves all three (probed 2026-11-08). Its chat template
+ * rejects minimal/high/max with a bare `data: [DONE]`, so those stay locked.
+ */
+const OVH_QWEN38_REASONING_MAP: ThinkingLevelMap = {
+ off: null,
+ minimal: null,
+ low: "low",
+ medium: "medium",
+ high: null,
+ xhigh: "xhigh",
+ max: null,
+};
+
+/**
  * Catalog-id namespace for the OVH lane. OVH model ids are case-sensitive on
  * the wire and several carry capitals and dots, so the prefix namespaces the
  * lane (and keeps the id recognized by isFreeCatalogId) while the suffix is
@@ -598,7 +613,8 @@ const OVH_QWEN_REASONING_MAP: ThinkingLevelMap = {
 export const OVH_MODEL_PREFIX = "ovh-free/";
 
 /**
- * OVHcloud AI Endpoints free models — keyless, direct-only.
+ * OVHcloud AI Endpoints free models — keyless, relay-eligible when the pool is
+ * armed (round-robin, cooling relays skipped); direct otherwise.
  * Endpoint: https://oai.endpoints.kepler.ai.cloud.ovh.net/v1
  *
  * Every id is OVH-native with an `ovh-free/` prefix; upstream only knows the
@@ -616,7 +632,8 @@ export const OVH_MODEL_PREFIX = "ovh-free/";
  * is discarded): 235,929 for the 397B and 3.8, 65,536 for the 9B, 3.6 and
  * both gpt-oss models. Effort rungs come from models.dev's ovhcloud rows,
  * not from wire probes: gpt-oss and the 3.5 Qwens list low/medium/high, the
- * 3.6/3.8 add minimal.
+ * 3.6 adds minimal. Qwen3.8 uses its native low/medium/xhigh ladder: xhigh is
+ * the model default, and minimal/high/max are rejected by its chat template.
  *
  * Vision was probed with a generated solid-colour PNG sent as a data URL,
  * twice with two different colours to defeat a memorised answer: the four
@@ -679,7 +696,7 @@ export const OVH_MODELS: ModelDef[] = [
   contextWindow: 262_144,
   maxTokens: 235_929,
   input: ["text", "image"],
-  thinkingLevelMap: OVH_QWEN_REASONING_MAP,
+  thinkingLevelMap: OVH_QWEN38_REASONING_MAP,
  },
  {
   id: "ovh-free/Mistral-Small-3.2-24B-Instruct-2506",

@@ -78,8 +78,8 @@ export function responsesInputToChatMessages(input: unknown): Record<string, unk
  * chat via translateToolsForPath), tool_choice, and plain sampling scalars.
  * Stream policy stays with the caller: this maps shape, never behavior.
  *
- * Lane-neutral: used by every direct-only lane that serves chat upstream and
- * answers a responses-path caller (Cline, OVHcloud AI Endpoints).
+ * Lane-neutral: used by every chat-only lane that answers a responses-path
+ * caller (Cline, OVHcloud AI Endpoints).
  */
 export function chatBodyFromResponsesBody(body: Record<string, unknown>): Record<string, unknown> {
  const out: Record<string, unknown> = {};

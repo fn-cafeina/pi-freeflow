@@ -693,6 +693,7 @@ test("proxy e2e: ovh responses path translates to chat upstream and answers a Re
 	assert.ok(!("store" in upstream), "ovh never adds store");
 	assert.ok(!("input" in upstream), "the responses-only input field never reaches the chat endpoint");
 	assert.ok(!("max_output_tokens" in upstream), "max_output_tokens must be stripped so OVH does not reject it as an extra argument");
+	assert.equal(upstream.max_tokens, 32, "the responses cap must map to the chat max_tokens spelling");
 	assert.ok(Array.isArray(upstream.messages), "the caller's input array became chat messages");
 	assert.deepEqual(upstream.messages, [{ role: "user", content: "Say OK" }], "the caller's input text survives the mapping");
 	assert.ok(Array.isArray(upstream.tools));
@@ -808,35 +809,52 @@ test("proxy e2e: ovh chat streaming restores the caller's tool names", async () 
 	assert.ok(clientBody.includes("git status --short"), "the glued bash payload is repaired on the streamed ovh lane too");
 });
 
-test("proxy e2e: ovh qwen3.8 drops reasoning_effort before the wire", async () => {
-	// Measured 2026-10-22: Qwen3.8-27B on OVH answers HTTP 200 whose body is a
-	// bare `data: [DONE]` whenever `reasoning_effort` is present (max_tokens
-	// 4000 and 32000 alike); without the field it streams its own reasoning.
-	// The lane strips the field for this model only.
+test("proxy e2e: ovh qwen3.8 keeps its native reasoning_effort ladder", async () => {
+	// Qwen3.8-27B's native ladder is low/medium/xhigh (xhigh is the model
+	// default). OVH serves all three (probed 2026-11-08). Minimal/high/max
+	// close the turn with a bare `data: [DONE]`, so only those are dropped.
+	const capture: { bodies?: Array<Record<string, unknown>> } = { bodies: [] };
 	let clientBody = "";
-	const upstream = await withProxyAndMock(29330, (res) => {
+	await withProxyAndMock(29330, (res) => {
 		res.writeHead(200, { "content-type": "text/event-stream" });
 		res.end(ovhChatSse("Qwen3.8-27B", "answered"));
 	}, async (port) => {
-		const res = await postJson(port, "/v1/chat/completions", {
-			model: "ovh-free/Qwen3.8-27B",
-			messages: [{ role: "user", content: "hi" }],
-			stream: false,
-			reasoning_effort: "high",
-		});
-		assert.equal(res.status, 200);
-		clientBody = res.body;
-	});
-	assert.ok(upstream);
-	assert.ok(!("reasoning_effort" in upstream), "qwen3.8 must never receive reasoning_effort upstream");
+		for (const effort of ["low", "medium", "xhigh"]) {
+			const res = await postJson(port, "/v1/chat/completions", {
+				model: "ovh-free/Qwen3.8-27B",
+				messages: [{ role: "user", content: "hi" }],
+				stream: false,
+				reasoning_effort: effort,
+			});
+			assert.equal(res.status, 200);
+			clientBody = res.body;
+		}
+		for (const effort of ["minimal", "high", "max"]) {
+			const res = await postJson(port, "/v1/chat/completions", {
+				model: "ovh-free/Qwen3.8-27B",
+				messages: [{ role: "user", content: "hi" }],
+				stream: false,
+				reasoning_effort: effort,
+			});
+			assert.equal(res.status, 200);
+		}
+	}, capture);
+	const bodies = capture.bodies ?? [];
+	assert.equal(bodies.length, 6, "every request must reach the mock upstream");
+	for (const [i, effort] of ["low", "medium", "xhigh"].entries()) {
+		assert.equal(bodies[i].reasoning_effort, effort, `${effort} must reach the wire`);
+	}
+	for (const [i, effort] of ["minimal", "high", "max"].entries()) {
+		assert.ok(!("reasoning_effort" in bodies[3 + i]), `${effort} must be dropped`);
+	}
 	const client = JSON.parse(clientBody) as Record<string, unknown>;
 	const message = (client.choices as Array<Record<string, unknown>>)[0].message as Record<string, unknown>;
-	assert.equal(message.content, "answered", "the model answers normally once the field is gone");
+	assert.equal(message.content, "answered", "the model answers with its native effort");
 });
 
 test("proxy e2e: ovh gpt-oss-20b keeps reasoning_effort verbatim", async () => {
-	// The strip above is model-scoped: every other OVH model tolerates the
-	// field, so the lane must not silently rewrite their sampling knobs.
+	// The Qwen3.8-only effort filter must not touch another OVH model, which
+	// tolerates the caller's sampling knob.
 	const upstream = await withProxyAndMock(29331, (res) => {
 		res.writeHead(200, { "content-type": "text/event-stream" });
 		res.end(ovhChatSse("gpt-oss-20b", "kept"));

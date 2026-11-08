@@ -9,6 +9,7 @@ import { relayFetch } from "../src/relay.ts";
 import {
 	_resetSpreadCursorForTest,
 	getActiveRelayState,
+	isRelayHealthy,
 	loadRelayState,
 	markRelayFailure,
 	orderedRelayCandidates,
@@ -146,6 +147,54 @@ test("round-robin: relayFetch with roundRobin affinity does not rewrite sticky p
 			getActiveRelayState().url,
 			POOL[0],
 			"forced round-robin requests (like OVH) must not overwrite the sticky primary relay",
+		);
+	}, { onRestore: () => resetAllRelayHealth() });
+});
+
+test("health: a lane 429 does not cool the same relay for another lane", async () => {
+	await withIsolatedRelayFiles(async () => {
+		resetAllRelayHealth();
+		setActiveRelayState(poolState("auto"), false);
+		markRelayFailure(POOL[0], 429, undefined, "ovh");
+		assert.equal(isRelayHealthy(POOL[0]), true, "the default (Zen) lane must stay healthy");
+		assert.equal(isRelayHealthy(POOL[0], "ovh"), false, "the OVH lane must be cooling");
+	}, { onRestore: () => resetAllRelayHealth() });
+});
+
+test("round-robin: skipCooling uses a healthy relay and never a cooling one", async () => {
+	await withIsolatedRelayFiles(async () => {
+		_resetSpreadCursorForTest();
+		resetAllRelayHealth();
+		setActiveRelayState(poolState("auto"), false);
+		markRelayFailure(POOL[0], 429, undefined, "ovh");
+		const order = orderedRelayCandidates(undefined, undefined, true, { lane: "ovh", skipCooling: true });
+		assert.equal(order.length, POOL.length - 1, "the cooling relay must be dropped");
+		assert.ok(!order.includes(POOL[0]), "a cooling relay must never be attempted");
+	}, { onRestore: () => resetAllRelayHealth() });
+});
+
+test("round-robin: skipCooling goes direct when every relay is cooling", async () => {
+	await withIsolatedRelayFiles(async () => {
+		_resetSpreadCursorForTest();
+		resetAllRelayHealth();
+		setActiveRelayState(poolState("auto"), false);
+		for (const url of POOL) markRelayFailure(url, 429, undefined, "ovh");
+		const calls: string[] = [];
+		test.mock.method(globalThis, "fetch", async (url: string) => {
+			calls.push(url);
+			return stubResponse(200);
+		});
+		const res = await relayFetch(
+			"https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions",
+			{},
+			"ovh-skip",
+			{ roundRobin: true, lane: "ovh", skipCooling: true },
+		);
+		assert.equal(res.status, 200);
+		assert.deepEqual(
+			calls,
+			["https://oai.endpoints.kepler.ai.cloud.ovh.net/v1/chat/completions"],
+			"a fully cooling OVH pool must go direct instead of paying a 429 round-trip per relay",
 		);
 	}, { onRestore: () => resetAllRelayHealth() });
 });

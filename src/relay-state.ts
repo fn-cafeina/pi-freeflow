@@ -438,6 +438,14 @@ export interface RelayHealth {
 }
 
 const relayHealthMap = new Map<string, RelayHealth>();
+/**
+ * Health records are lane-scoped: an OVH 429 must not cool the same relay for
+ * Zen (and vice versa). Defaults to the Zen lane for every legacy caller.
+ */
+function relayHealthKey(url: string, lane?: string): string {
+ const scope = (lane ?? "opencode").trim() || "opencode";
+ return `${scope}|${url.trim()}`;
+}
 // Sliding 60-second window of HTTP 429 events used by markRelayFailure to
 // keep the "burst >5/min" warning honest (see markRelayFailure).
 const RELAY_429_BURST_WINDOW_MS = 60_000;
@@ -459,9 +467,9 @@ export const RELAY_EWMA_MARGIN_RATIO = 0.25;
  * With a finite latencyMs the health record is kept (failures reset, latency
  * recorded); without one the record is deleted entirely.
  */
-export function markRelaySuccess(url: string, latencyMs?: number): void {
+export function markRelaySuccess(url: string, latencyMs?: number, lane?: string): void {
  if (!url) return;
- const clean = url.trim();
+ const clean = relayHealthKey(url, lane);
  if (typeof latencyMs === "number" && Number.isFinite(latencyMs)) {
   const prev = relayHealthMap.get(clean);
   const sample = Math.round(latencyMs);
@@ -479,9 +487,9 @@ export function markRelaySuccess(url: string, latencyMs?: number): void {
 /**
  * Mark a relay as degraded with temporary cooldown on failure/429/timeout/socket error.
  */
-export function markRelayFailure(url: string, status?: number, error?: string): void {
+export function markRelayFailure(url: string, status?: number, error?: string, lane?: string): void {
  if (!url) return;
- const clean = url.trim();
+ const clean = relayHealthKey(url, lane);
  const prev = relayHealthMap.get(clean) || {
   consecutiveFailures: 0,
   lastFailureTime: 0,
@@ -539,9 +547,9 @@ export function markRelayFailure(url: string, status?: number, error?: string): 
 /**
  * Check if a relay is currently healthy (not in active cooldown).
  */
-export function isRelayHealthy(url: string): boolean {
+export function isRelayHealthy(url: string, lane?: string): boolean {
  if (!url) return true;
- const clean = url.trim();
+ const clean = relayHealthKey(url, lane);
  const health = relayHealthMap.get(clean);
  if (!health) return true;
  return Date.now() >= health.cooldownUntil;
@@ -550,8 +558,8 @@ export function isRelayHealthy(url: string): boolean {
 /**
  * Get current health snapshot for a relay.
  */
-export function getRelayHealth(url: string): RelayHealth | undefined {
- return relayHealthMap.get(url.trim());
+export function getRelayHealth(url: string, lane?: string): RelayHealth | undefined {
+ return relayHealthMap.get(relayHealthKey(url, lane));
 }
 
 /**
@@ -734,7 +742,7 @@ export function shortRelayLabel(url: string, relays?: KnownRelay[]): string {
  * origin quota binds ~10x before data quota, so a healthy-but-quota-near Vercel
  * relay burns paid-adjacent budget. Vercel stays as failover.
  */
-export function getOrderedRelayUrls(): string[] {
+export function getOrderedRelayUrls(lane?: string): string[] {
  const mtime = currentDiskStateMtimeMs();
  if (mtime !== lastKnownStateMtimeMs) {
   activeRelayState = loadRelayState();
@@ -761,8 +769,8 @@ export function getOrderedRelayUrls(): string[] {
   }
 
   // Partition into healthy candidates first, degraded/cooling candidates at the tail
-  const healthy = rawOrdered.filter((u) => isRelayHealthy(u));
-  const cooling = rawOrdered.filter((u) => !isRelayHealthy(u));
+  const healthy = rawOrdered.filter((u) => isRelayHealthy(u, lane));
+  const cooling = rawOrdered.filter((u) => !isRelayHealthy(u, lane));
   // Vercel last resort within each partition: non-Vercel first, Vercel tail.
   const vercelFlag = new Map<string, boolean>();
   for (const u of rawOrdered) {
@@ -777,7 +785,7 @@ export function getOrderedRelayUrls(): string[] {
   // Phase 1 challenger: latency preference applies WITHIN the healthy-nonVercel
   // band only — Vercel failover, cooling tail, and spread sharding below are untouched.
   const ordered = [
-   ...applyEwmaChallenger(healthy.filter((u) => !vercelFlag.get(u))),
+   ...applyEwmaChallenger(healthy.filter((u) => !vercelFlag.get(u)), lane),
    ...healthy.filter((u) => vercelFlag.get(u)),
    ...cooling.filter((u) => !vercelFlag.get(u)),
    ...cooling.filter((u) => vercelFlag.get(u)),
@@ -798,20 +806,20 @@ export function getOrderedRelayUrls(): string[] {
  * samples ("unknown") sort after measured relays but ahead of cooling, in
  * sticky order. Cooling/Vercel/spread/affinity handling is untouched.
  */
-function applyEwmaChallenger(band: string[]): string[] {
+function applyEwmaChallenger(band: string[], lane?: string): string[] {
  if (band.length <= 1) return band;
  const head = band[0];
  const rest = band.slice(1);
- const floored = (u: string): boolean => (relayHealthMap.get(u)?.ewmaSamples ?? 0) >= RELAY_EWMA_FLOOR;
+ const floored = (u: string): boolean => (relayHealthMap.get(relayHealthKey(u, lane))?.ewmaSamples ?? 0) >= RELAY_EWMA_FLOOR;
  const measured = rest.filter(floored);
  const unknown = rest.filter((u) => !floored(u));
- const headEwma = relayHealthMap.get(head)?.ewmaMs;
+ const headEwma = relayHealthMap.get(relayHealthKey(head, lane))?.ewmaMs;
  if (headEwma !== undefined && Number.isFinite(headEwma)) {
   let challenger: string | undefined;
   let best = Number.POSITIVE_INFINITY;
   for (const u of measured) {
-   if (relayHealthMap.get(u)?.recovering) continue;
-   const ewma = relayHealthMap.get(u)?.ewmaMs;
+   if (relayHealthMap.get(relayHealthKey(u, lane))?.recovering) continue;
+   const ewma = relayHealthMap.get(relayHealthKey(u, lane))?.ewmaMs;
    if (ewma === undefined || !Number.isFinite(ewma)) continue;
    if (ewma < best) {
     best = ewma;
@@ -845,14 +853,21 @@ export function ewmaBadge(health: RelayHealth | undefined): string {
  * issuer map releases them on access — so this stays a pure health/presence
  * gate and ordering otherwise behaves exactly as today.
  */
-export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
+export function isSessionPinEligible(pin: string, ordered: string[], lane?: string): boolean {
  const clean = (pin ?? "").trim();
  if (!clean) return false;
  if (!ordered.includes(clean)) return false;
- if (!isRelayHealthy(clean)) return false;
- const health = getRelayHealth(clean);
+ if (!isRelayHealthy(clean, lane)) return false;
+ const health = getRelayHealth(clean, lane);
  if (health?.lastStatus === 402 && Date.now() < health.cooldownUntil) return false;
  return true;
+}
+
+export interface RelayCandidateOptions {
+ /** Health scope; defaults to the Zen/opencode lane. */
+ lane?: string;
+ /** Drop relays in cooldown instead of appending them as a tail. */
+ skipCooling?: boolean;
 }
 
 /**
@@ -870,24 +885,32 @@ export function isSessionPinEligible(pin: string, ordered: string[]): boolean {
  * instead of saturating the single sticky primary. A stable `spreadKey` (the
  * conversation key on /responses) keeps one conversation on one relay; without
  * a key the cursor round-robins per request. Cooling relays stay at the tail,
- * so a rate-limited IP is never preferred.
+ * so a rate-limited IP is never preferred. `skipCooling` drops that tail for
+ * stateless lanes (OVH): an empty result makes relayFetch go direct at once
+ * instead of paying a 429 round-trip per cooling relay.
  */
 export function orderedRelayCandidates(
  preferredRelay?: string,
  spreadKey?: string,
  forceRoundRobin?: boolean,
+ opts: RelayCandidateOptions = {},
 ): string[] {
- const ordered = getOrderedRelayUrls();
+ const lane = opts.lane;
+ const orderedAll = getOrderedRelayUrls(lane);
+ const ordered = opts.skipCooling
+  ? orderedAll.filter((u) => isRelayHealthy(u, lane))
+  : orderedAll;
+ if (ordered.length === 0) return [];
  const preferred = (preferredRelay ?? "").trim();
  if (preferred) {
   const index = ordered.indexOf(preferred);
   if (index <= 0) return ordered;
-  if (!isSessionPinEligible(preferred, ordered)) return ordered;
+  if (!isSessionPinEligible(preferred, ordered, lane)) return ordered;
   return [ordered[index], ...ordered.slice(0, index), ...ordered.slice(index + 1)];
  }
  if (activeRelayState.mode !== "spread" && !forceRoundRobin) return ordered;
- const healthy = ordered.filter((u) => isRelayHealthy(u));
- const cooling = ordered.filter((u) => !isRelayHealthy(u));
+ const healthy = ordered.filter((u) => isRelayHealthy(u, lane));
+ const cooling = opts.skipCooling ? [] : ordered.filter((u) => !isRelayHealthy(u, lane));
  if (healthy.length <= 1) return [...healthy, ...cooling];
  const k = spreadKey ? stableHash(spreadKey) % healthy.length : spreadCursor++ % healthy.length;
  return [...healthy.slice(k), ...healthy.slice(0, k), ...cooling];

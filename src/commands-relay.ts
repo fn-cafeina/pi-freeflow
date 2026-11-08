@@ -567,6 +567,12 @@ export async function handleRelaySubcommand(
   });
   persist();
   flash();
+  if (relayState.relays.length < 2) {
+   ctx.ui.notify(
+    "Spread mode needs at least 2 relays — with one relay it behaves like auto (sticky primary). Add another egress to rotate.",
+    "warning",
+   );
+  }
   return true;
  } else if (sub === "on") {
   applyRelayState((s) => {

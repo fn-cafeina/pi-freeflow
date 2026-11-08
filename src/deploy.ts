@@ -98,7 +98,7 @@ const timingSafeEqualStr = function(a, b) {
 };
 // x-relay-auth is read by the handler below, so it is stripped explicitly
 // (never forwarded upstream) instead of living in the denylist.
-const DENY_HEADERS = ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path"];
+const DENY_HEADERS = ["host", "connection", "content-length", "keep-alive", "proxy-connection", "proxy-authenticate", "proxy-authorization", "transfer-encoding", "te", "trailer", "upgrade", "x-relay-target", "x-relay-path", "cf-connecting-ip", "cf-connecting-ipv6", "cf-pseudo-ipv4", "cf-ipcountry", "cf-worker", "cf-ray", "cdn-loop", "true-client-ip", "x-real-ip", "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-client-ip", "x-originate-ip"];
 async function relayHandler(req) {
   if (!["GET", "POST", "HEAD", "OPTIONS"].includes(req.method)) return new Response("Method Not Allowed", { status: 405 });
   if (Number(req.headers.get("content-length") || 0) > 32 * 1024 * 1024) return new Response("Payload Too Large", { status: 413 });

@@ -46,9 +46,13 @@ let relayAgent: Agent | null = null;
 /** True when the bundled undici accepts the npm undici 7.x Agent as dispatcher. */
 export const canUseRelayDispatcher =
  Number((process.versions.undici ?? "0").split(".")[0]) === 7;
+// Keep headersTimeout disabled: every relay attempt already carries its own
+// AbortSignal deadline (attemptHeaderTimeoutMs), and a lower Agent cap would
+// silently undercut that budget. bodyTimeout stays disabled so a long healthy
+// stream is never killed by a fixed wall-clock ceiling.
 function getRelayAgent(): Agent {
  if (!relayAgent) {
-  relayAgent = new Agent({ keepAliveTimeout: 60_000, connectTimeout: 10_000, headersTimeout: 60_000, bodyTimeout: 0, connections: 50 });
+  relayAgent = new Agent({ keepAliveTimeout: 60_000, connectTimeout: 10_000, headersTimeout: 0, bodyTimeout: 0, connections: 50 });
  }
  return relayAgent;
 }
@@ -165,6 +169,10 @@ export interface RelayAffinity {
  spreadKey?: string;
  /** When true, healthy relays rotate round-robin regardless of pool mode (e.g. for OVH). */
  roundRobin?: boolean;
+ /** Health scope so one lane's 429 does not cool the relay for another. Defaults to `opencode`. */
+ lane?: string;
+ /** Drop cooling relays instead of appending them as a tail (stateless lanes). */
+ skipCooling?: boolean;
  onServed?: (relay: string | null) => void;
 }
 
@@ -200,7 +208,10 @@ export async function relayFetch(
   affinity.onServed?.(null);
   return fetch(url, opts as unknown as RequestInit);
  }
- const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin);
+ const candidates = orderedRelayCandidates(affinity.preferred, affinity.spreadKey, affinity.roundRobin, {
+  lane: affinity.lane,
+  skipCooling: affinity.skipCooling,
+ });
 
  if (candidates.length === 0) {
   // Empty pool: skip straight to upstream instead of logging a misleading
@@ -352,8 +363,8 @@ export async function relayFetch(
    const canHedge =
     candidates.length > 1 &&
     i < candidates.length - 1 &&
-    isRelayHealthy(targetUrl) &&
-    isRelayHealthy(candidates[i + 1]);
+    isRelayHealthy(targetUrl, affinity.lane) &&
+    isRelayHealthy(candidates[i + 1], affinity.lane);
    let res: Response;
    if (!canHedge) {
     const soloCtl = new AbortController();
@@ -438,7 +449,7 @@ export async function relayFetch(
       if ((hedgeErr as Error)?.name === "AbortError" && opts.signal?.aborted) {
        throw hedgeErr;
       }
-      markRelayFailure(nextUrl, 0, (hedgeErr as Error)?.message || String(hedgeErr));
+      markRelayFailure(nextUrl, 0, (hedgeErr as Error)?.message || String(hedgeErr), affinity.lane);
       // Both legs of this race were abandoned; the outer catch
       // reports the primary one, this reports the hedge leg.
       reportAbandoned(
@@ -455,7 +466,7 @@ export async function relayFetch(
    // straight back to direct. The pool is self-hosted, not Vercel-edge, so a
    // sibling relay is worth trying before the direct fallback.
    if (res.status === 504) {
-    markRelayFailure(targetUrl, 504, "Gateway Timeout (25s exceeded)");
+    markRelayFailure(targetUrl, 504, "Gateway Timeout (25s exceeded)", affinity.lane);
     res.body?.cancel().catch(() => {});
     log(
      "warn",
@@ -514,7 +525,7 @@ export async function relayFetch(
 
    if (isRelayEdge404) {
     rateLimitOnly = false;
-    markRelayFailure(targetUrl, 404, "Deployment or route not found on relay host");
+    markRelayFailure(targetUrl, 404, "Deployment or route not found on relay host", affinity.lane);
     lastResponse?.body?.cancel().catch(() => {});
     lastResponse = res;
     lastResponseRelay = targetUrl;
@@ -552,7 +563,7 @@ export async function relayFetch(
     }
     if (isRelayDeploymentDisabled(res, disabledBody)) {
      rateLimitOnly = false;
-     markRelayFailure(targetUrl, 402, "Deployment disabled (DEPLOYMENT_DISABLED) on relay host");
+     markRelayFailure(targetUrl, 402, "Deployment disabled (DEPLOYMENT_DISABLED) on relay host", affinity.lane);
      disabledRelays.push(targetUrl);
      lastResponse?.body?.cancel().catch(() => {});
      lastResponse = res;
@@ -595,7 +606,7 @@ export async function relayFetch(
      affinity.onServed?.(targetUrl);
      return res;
     }
-    markRelayFailure(targetUrl, res.status);
+    markRelayFailure(targetUrl, res.status, undefined, affinity.lane);
     lastResponse?.body?.cancel().catch(() => {});
     lastResponse = res;
     lastResponseRelay = targetUrl;
@@ -699,6 +710,7 @@ export async function relayFetch(
      authRejected
       ? "Relay auth rejected (x-relay-auth mismatch)"
       : "Relay returned HTTP 403 (stripped or blocked egress fingerprint)",
+     affinity.lane,
     );
     lastResponse?.body?.cancel().catch(() => {});
     lastResponse = res;
@@ -733,7 +745,7 @@ export async function relayFetch(
    // now — a multi-MB error body would otherwise hold its connection
    // out of the shared relay agent until GC.
    lastResponse?.body?.cancel().catch(() => {});
-   markRelaySuccess(targetUrl, Date.now() - attemptStart);
+   markRelaySuccess(targetUrl, Date.now() - attemptStart, affinity.lane);
    // If we switched to a different relay because previous failed, update sticky active relay!
    //
    // Exception: a winner that is the caller's preferred (affinity) relay
@@ -790,7 +802,7 @@ export async function relayFetch(
     (err as Error)?.name === "AbortError"
      ? `relay header timeout (${Math.round(attemptHeaderTimeoutMs / 1000)}s exceeded)`
      : (err as Error)?.message || String(err);
-   markRelayFailure(targetUrl, 0, errMsg);
+   markRelayFailure(targetUrl, 0, errMsg, affinity.lane);
    log(
     "warn",
     `relay ${targetUrl} fetch error in ${elapsed}s — rolling to next relay`,

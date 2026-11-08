@@ -15,7 +15,7 @@ Instead of VPN tunnels, pi-freeflow talks to two families of relays over one con
        ▼
 [Relay — edge worker or self-hosted pool]
        │
-       │ (2) Whitelist validation (allows only opencode.ai & api.kilo.ai)
+       │ (2) Whitelist validation (allows only opencode.ai, api.kilo.ai & OVH AI Endpoints)
        │ (3) Strips x-relay-* headers, forges clean upstream headers
        ▼
 [Direct Upstream Provider]
@@ -78,6 +78,15 @@ same pool. What separates them is how many egress addresses you control:
 | Request fidelity | the client's fingerprint forwarded as-is | Deno rewrites `User-Agent` → Zen refuses |
 | Infrastructure | one Linux host with Docker | none |
 | Best for | OpenCode Zen traffic, parallel subagents | a zero-infra start, Kilo models, light use |
+
+Both families hide the caller behind the relay's egress only if the relay
+strips the visitor-IP headers the platform adds. The generated edge workers
+remove `CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`, and the related
+platform headers before the subrequest. A hand-written worker that copies
+headers unchanged leaks the caller's address, and a per-IP upstream limit can
+then bind no matter how many relays are in the pool. Rotation only buys quota
+when the upstream keys on the relay's egress address; shared platform egress
+and per-model capacity can still limit the total.
 
 ### Self-hosted WARP relay pool (recommended for OpenCode Zen)
 

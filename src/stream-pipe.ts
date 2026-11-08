@@ -327,6 +327,8 @@ export interface StreamPipeOptions {
   * `terminal: false`). Cloak rewrites also report through its `repair`.
   */
  audit?: ToolcallStreamAudit;
+ /** Relay health scope for mid-stream failure marks. Defaults to `opencode`. */
+ lane?: string;
 }
 /**
  * Pipes an upstream readable stream to a client HTTP response.
@@ -727,7 +729,7 @@ export function pipeUpstreamStream(
   if (penalizeRelay && relayUrl && relayUrl !== "direct") {
    // Relay-fault side of the mid-stream split (model faults never reach here).
    midStreamRelayTruncations += 1;
-   markRelayFailure(relayUrl, 0, errorMsg || "stream truncated prematurely");
+   markRelayFailure(relayUrl, 0, errorMsg || "stream truncated prematurely", opts?.lane);
   }
   if (isResponsesApi && totalChunks > 0) {
    try {
@@ -930,7 +932,7 @@ export function pipeUpstreamStream(
     flushGateRaw();
     if (!isInternalAbort && relayUrl && relayUrl !== "direct") {
      midStreamRelayTruncations += 1;
-     markRelayFailure(relayUrl, 0, errorMsg || "stream failed mid-body");
+     markRelayFailure(relayUrl, 0, errorMsg || "stream failed mid-body", opts?.lane);
     }
    } else if (isInternalAbort) {
     clientAborted = true;
@@ -1088,7 +1090,7 @@ export function pipeUpstreamStream(
     flushGateRaw();
     if (!clientAborted && !upstreamEnded && relayUrl && relayUrl !== "direct") {
      midStreamRelayTruncations += 1;
-     markRelayFailure(relayUrl, 0, "stream closed prematurely");
+     markRelayFailure(relayUrl, 0, "stream closed prematurely", opts?.lane);
     }
    } else if (!hasTerminalEvent && totalChunks > 0) {
     if (clientAborted || upstreamEnded) {

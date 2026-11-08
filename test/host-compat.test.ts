@@ -414,6 +414,18 @@ test("F1: OVH models pin the plain openai thinking format and clear the Qwen tem
 	}
 });
 
+test("F3: Qwen3.8 on OVH advertises its native effort ladder", () => {
+	const cfg = buildProviderConfig(
+		OVH_MODELS.map((m) => ({ ...m, source: "ovh" as const })),
+		29753,
+	);
+	const qwen38 = cfg.models.find((m) => m.id === "ovh-free/Qwen3.8-27B");
+	assert.ok(qwen38, "Qwen3.8 must be registered");
+	assert.deepEqual(qwen38!.thinking?.efforts, ["low", "medium", "xhigh"], "the host must offer the model's native rungs");
+	const qwen36 = cfg.models.find((m) => m.id === "ovh-free/Qwen3.6-27B");
+	assert.ok(qwen36?.thinking?.efforts?.includes("minimal"), "Qwen3.6 keeps its effort control");
+});
+
 test("F2: buildProviderConfig passes the anthropic-messages api through", () => {
 	// The messages flavor stays supported even though no current catalog model
 	// declares it, so lock the passthrough with a synthetic model.

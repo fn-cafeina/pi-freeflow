@@ -398,8 +398,8 @@ test("catalog spec lock: published/served ctx/max/reasoning per model", () => {
   "xingchen-agi/xing4.0-29b-a4b:free": { ctx: 262_144, max: 235_929, reasoning: true },
   // Cline direct-only (per-user pool — https://api.cline.bot)
   "cline/nemotron-3.5-super-vl": { ctx: 1_000_000, max: 131_072, reasoning: true },
-  // OVHcloud AI Endpoints, keyless direct-only. Contexts are OVH's own
-  // advertised windows (the lane hard-caps there); max is the highest
+  // OVHcloud AI Endpoints, keyless; relay-eligible when the pool is armed.
+  // Contexts are OVH's own advertised windows (the lane hard-caps there); max is the highest
   // published output below the window. OVH's max_completion_tokens echoes the
   // context, so that echo is discarded: 235,929 for the 397B and 3.8, 65,536
   // for the 9B, 3.6 and both gpt-oss models, 32,768 for Mistral and Llama.
@@ -637,14 +637,17 @@ test("2026-10-13 OVH spec-drift guard: context windows change only with a delibe
 test("2026-10-13 OVH reasoning models lock the confirmed effort ladders", () => {
 	const base = { off: null, minimal: null, low: "low", medium: "medium", high: "high", xhigh: null, max: null };
 	const qwen = { off: null, minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: null, max: null };
+	const qwen38 = { off: null, minimal: null, low: "low", medium: "medium", high: null, xhigh: "xhigh", max: null };
 	for (const m of OVH_MODELS) {
 		if (!m.reasoning) {
 			assert.equal(m.thinkingLevelMap, undefined, `${m.id} non-reasoning must declare no map`);
 			continue;
 		}
-		// The 3.6/3.8 Qwens publish one extra rung (minimal); the 3.5 pairs and
-		// both gpt-oss models start at low. No lane model offers xhigh or max.
-		const expected = m.id.includes("Qwen3.6") || m.id.includes("Qwen3.8") ? qwen : base;
+		// The 3.6 Qwen publishes one extra rung (minimal); the 3.5 pairs and
+		// both gpt-oss models start at low. Qwen3.8 uses its native
+		// low/medium/xhigh ladder (xhigh is the model default). No lane model
+		// offers xhigh except Qwen3.8.
+		const expected = m.id.includes("Qwen3.8") ? qwen38 : m.id.includes("Qwen3.6") ? qwen : base;
 		assert.deepEqual(m.thinkingLevelMap, expected, `${m.id} effort map`);
 		for (const level of ["off", "minimal", "low", "medium", "high", "xhigh", "max"]) {
 			assert.ok(level in m.thinkingLevelMap!, `${m.id}: ${level} must be explicit`);

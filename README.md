@@ -134,13 +134,14 @@ For `api/relay.js`, use the canonical worker source (see below); `vercel.json` s
 
 **Canonical worker source (all platforms)**
 
-The relay worker template is generated per deployment by `/freeflow deploy`, with one shared core adapted for Vercel, Cloudflare, and Deno. Every deploy embeds a random 32-byte secret, and the generated worker answers `401` to any request without a matching `x-relay-auth` header; the client sends that secret to each relay in the pool. Only a hand-pasted legacy worker built without a secret is open to anyone. Either way, a relay forwards only to an allowlist (`https://opencode.ai`, `https://api.kilo.ai`) with private-host and path checks.
+The relay worker template is generated per deployment by `/freeflow deploy`, with one shared core adapted for Vercel, Cloudflare, and Deno. Every deploy embeds a random 32-byte secret, and the generated worker answers `401` to any request without a matching `x-relay-auth` header; the client sends that secret to each relay in the pool. Only a hand-pasted legacy worker built without a secret is open to anyone. Either way, a relay forwards only to an allowlist (`https://opencode.ai`, `https://api.kilo.ai`, `https://oai.endpoints.kepler.ai.cloud.ovh.net`) with private-host and path checks, and strips visitor-IP/platform headers before the subrequest.
 
 ```js
 // Minimal Cloudflare illustration. Prefer /freeflow deploy: the generated
 // worker is the hardened source for all three platforms.
-// This example omits the private-host guard, path validation, and auth.
-const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai"];
+// This example omits the private-host guard, path validation, auth, and the
+// visitor-IP header stripping the canonical template performs.
+const ALLOWED_TARGETS = ["https://opencode.ai", "https://api.kilo.ai", "https://oai.endpoints.kepler.ai.cloud.ovh.net"];
 export default {
   async fetch(req) {
     const target = req.headers.get("x-relay-target");
@@ -278,9 +279,9 @@ Each account can only be saved once: an extra login for an account you already h
 
 #### OVHcloud AI Endpoints (8 models), OpenAI compatible
 
-Anonymous access — no account, no key, nothing to sign in to. When the relay pool is armed, OVH requests route through your relays to bypass the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct.
+Anonymous access — no account, no key, nothing to sign in to. When the relay pool is armed, OVH requests route through your relays (round-robin, cooling relays skipped) to spread the 2 req/min per-IP limit for burst requests and subagents; otherwise requests route direct. Rotation helps only when the relay egress is the limiter — OVH's anonymous capacity may still be shared per model.
 
-Pick them with the slash-free short name (the full ID is in parentheses). The lane's rows publish `low`/`medium`/`high`; the 3.6 and 3.8 Qwens add `minimal`, and nothing on this lane offers `xhigh`/`max`.
+Pick them with the slash-free short name (the full ID is in parentheses). The lane's rows publish `low`/`medium`/`high`; Qwen3.6 adds `minimal`. Qwen3.8 uses its native `low`/`medium`/`xhigh` ladder: `xhigh` is the model default, and `minimal`/`high`/`max` are not served.
 All eight talk the normal chat API. Hosts that prefer the responses API work too — the proxy maps that shape to chat and maps the answer back, so tool calls and streamed output behave exactly as they do on the other providers.
 
 | Model ID | Creator / Lab | Context | Max Output | Thinking | Vision |
@@ -290,7 +291,7 @@ All eight talk the normal chat API. Hosts that prefer the responses API work too
 | `qwen3.5-397b` (`ovh-free/Qwen3.5-397B-A17B`) | Alibaba Qwen | **256K** (262.144) | **235K** (235.929) | `low/medium/high` | ✅ |
 | `qwen3.5-9b` (`ovh-free/Qwen3.5-9B`) | Alibaba Qwen | **256K** (262.144) | **65K** (65.536) | `low/medium/high` | ✅ |
 | `qwen3.6-27b` (`ovh-free/Qwen3.6-27B`) | Alibaba Qwen | **256K** (262.144) | **65K** (65.536) | `minimal … high` | ✅ |
-| `qwen3.8-27b` (`ovh-free/Qwen3.8-27B`) | Alibaba Qwen | **256K** (262.144) | **235K** (235.929) | `minimal … high` | ✅ |
+| `qwen3.8-27b` (`ovh-free/Qwen3.8-27B`) | Alibaba Qwen | **256K** (262.144) | **235K** (235.929) | `low/medium/xhigh` | ✅ |
 | `mistral-small-3.2` (`ovh-free/Mistral-Small-3.2-24B-Instruct-2506`) | Mistral AI | **128K** (131.072) | **32K** (32.768) | ❌ | ✅ |
 | `llama-3.3-70b` (`ovh-free/Meta-Llama-3_3-70B-Instruct`) | Meta | **128K** (131.072) | **32K** (32.768) | ❌ | ❌ |
 
